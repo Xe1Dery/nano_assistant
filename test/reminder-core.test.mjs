@@ -155,6 +155,29 @@ test("group retry is fixed 5m and the repeat budget goes stale", () => {
   assert.equal(stale.state.tasks.b.status, "stale");
 });
 
+test("events carry the stale list so the courier can ask about it", () => {
+  // Burn task "a" to stale, keep task "b" freshly due.
+  const a = task("a", "игнор", T0 - min(1));
+  let state = null;
+  let now = T0;
+  for (let i = 0; i < DEFAULTS.maxRepeats; i++) {
+    state = planScan(state, [a], now).state;
+    now += min(600);
+  }
+  const plan = planScan(state, [a, task("b", "свеж", now - min(1))], now);
+  assert.equal(plan.events.length, 1); // b fires (single: a is stale, not a candidate)
+  assert.deepEqual(plan.events[0].stale.map((t) => t.taskId), ["a"]);
+  // renderEvent turns it into the STALE section + the one-question rule.
+  const text = renderEvent(plan.events[0]);
+  assert.match(text, /STALE \(nagged to the limit/);
+  assert.match(text, /1\. игнор/);
+  assert.match(text, /ask in chat once/);
+  // No stale tasks -> no section at all.
+  const clean = planScan(null, [task("b", "свеж", T0 - min(1))], T0);
+  assert.equal(clean.events[0].stale.length, 0);
+  assert.doesNotMatch(renderEvent(clean.events[0]), /STALE/);
+});
+
 test("reminderId is deterministic per task+due+attempt", () => {
   const tasks = [task("a", "x", T0 - min(1))];
   const p1 = planScan(null, tasks, T0);

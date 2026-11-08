@@ -106,6 +106,10 @@ one grouped popup whose spoken answer is free text Nano maps onto the tasks.
 - The event (`REMINDER_EVENT v2`) fixes the procedure but explicitly lets
   Nano author the popup wording and continue the conversation in chat after
   the popup (see `openclaw/AGENTS.reminder.md`).
+- Tasks that went stale (ignored `maxRepeats` times) ride along in every
+  event as a `STALE` section; Nano asks about them once in chat after the
+  popup and never repeats the question. The list is also in
+  `state.diag.stale` (`automations get`).
 
 ## Tuning
 

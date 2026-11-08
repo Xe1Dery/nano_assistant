@@ -308,6 +308,15 @@ function planScan(state, tasks, nowMs, config = {}) {
 
   pruneLedger(next, cfg);
   fitStateBudget(next, cfg);
+  // Stale = nagged out until the task itself changes. Invisible to the model
+  // unless we say so: ride the list along in every event (free — it is code)
+  // so the courier can ask about them in chat after the popup. Collected
+  // after eviction so it matches what the ledger actually retains.
+  const stale = [];
+  for (const [id, entry] of Object.entries(next.tasks)) {
+    if (entry.status === "stale") stale.push({ taskId: id, title: entry.title });
+  }
+  if (events.length) events[0].stale = stale;
   // Wake planning: the ledger's own retry times (single ladder or the fixed
   // group wait), plus every scanned deadline — including tasks the ledger
   // cap evicted, whose due time must still pull the next scan in.
@@ -494,6 +503,16 @@ function renderEvent(event, config = {}) {
       "Task ids, in list order: " + items.map((t) => t.taskId).join(", ") + ".",
     );
   }
+  const stale = event.stale ?? [];
+  if (stale.length) {
+    out.push(
+      `STALE (nagged to the limit, quiet until the wearer decides): ${stale
+        .slice(0, cfg.maxGroupItems)
+        .map((t, i) => `${i + 1}. ${t.title}`)
+        .join(" ")}` + (stale.length > cfg.maxGroupItems ? ` (+${stale.length - cfg.maxGroupItems} more)` : ""),
+      "If this list is non-empty: after processing the popup answer, ask in chat once what to do with these tasks (complete / reschedule / delete). One question per event; if the wearer declines or ignores it, do not bring this set up again.",
+    );
+  }
   out.push("Do not call any other glasses tool in this turn.");
   return out.join("\n");
 }
@@ -664,6 +683,12 @@ async function main() {
     withDue: tasks.filter((t) => t.dueMs).length,
     closed: tasks.filter((t) => t.closed).length,
     events: plan.events.length,
+    // Task titles the ledger gave up nagging about (status stale): visible
+    // via `automations get` and carried into events for the courier.
+    stale: Object.values(plan.state.tasks)
+      .filter((e) => e.status === "stale")
+      .map((e) => e.title)
+      .slice(0, 10),
   };
   if (plan.events.length) {
     result.notify = renderEvent(plan.events[0]);

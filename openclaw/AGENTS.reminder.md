@@ -32,6 +32,14 @@ Procedure, not negotiable:
 4. TickTick is the source of truth: every state change you apply goes through
    the TickTick MCP tools, never through memory or notes.
 
+If the event carries a `STALE` section (tasks the controller stopped nagging
+about because the wearer kept ignoring them): after processing the popup
+answer, ask in chat once what to do with them — complete, reschedule, or
+delete. One question per event; if the wearer declines or does not answer,
+never bring that same set up again. The stale list is the ledger's truth —
+do not re-derive it from memory, and do not act on those tasks without the
+wearer's word.
+
 Conversational task requests ("что у меня сегодня?", "добавь задачу...") are
 yours to handle directly with the TickTick MCP tools, in any language the
 wearer speaks. Never invent task ids — take them from a fresh list/get call.

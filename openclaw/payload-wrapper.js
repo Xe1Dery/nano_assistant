@@ -155,6 +155,12 @@ async function main() {
     withDue: tasks.filter((t) => t.dueMs).length,
     closed: tasks.filter((t) => t.closed).length,
     events: plan.events.length,
+    // Task titles the ledger gave up nagging about (status stale): visible
+    // via `automations get` and carried into events for the courier.
+    stale: Object.values(plan.state.tasks)
+      .filter((e) => e.status === "stale")
+      .map((e) => e.title)
+      .slice(0, 10),
   };
   if (plan.events.length) {
     result.notify = renderEvent(plan.events[0]);

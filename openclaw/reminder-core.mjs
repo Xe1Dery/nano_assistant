@@ -306,6 +306,15 @@ export function planScan(state, tasks, nowMs, config = {}) {
 
   pruneLedger(next, cfg);
   fitStateBudget(next, cfg);
+  // Stale = nagged out until the task itself changes. Invisible to the model
+  // unless we say so: ride the list along in every event (free — it is code)
+  // so the courier can ask about them in chat after the popup. Collected
+  // after eviction so it matches what the ledger actually retains.
+  const stale = [];
+  for (const [id, entry] of Object.entries(next.tasks)) {
+    if (entry.status === "stale") stale.push({ taskId: id, title: entry.title });
+  }
+  if (events.length) events[0].stale = stale;
   // Wake planning: the ledger's own retry times (single ladder or the fixed
   // group wait), plus every scanned deadline — including tasks the ledger
   // cap evicted, whose due time must still pull the next scan in.
@@ -490,6 +499,16 @@ export function renderEvent(event, config = {}) {
       `- action "other" with the wearer's words in "text": map them onto the listed tasks and act in TickTick (complete_task / update_task). If the answer is ambiguous, ask one clarifying question in chat, never on the glasses.`,
       `- action "dismissed" / "expired" / "cancelled": do nothing; the controller re-notifies the group in ${Math.round(cfg.groupBackoffMs / 60_000)} minutes.`,
       "Task ids, in list order: " + items.map((t) => t.taskId).join(", ") + ".",
+    );
+  }
+  const stale = event.stale ?? [];
+  if (stale.length) {
+    out.push(
+      `STALE (nagged to the limit, quiet until the wearer decides): ${stale
+        .slice(0, cfg.maxGroupItems)
+        .map((t, i) => `${i + 1}. ${t.title}`)
+        .join(" ")}` + (stale.length > cfg.maxGroupItems ? ` (+${stale.length - cfg.maxGroupItems} more)` : ""),
+      "If this list is non-empty: after processing the popup answer, ask in chat once what to do with these tasks (complete / reschedule / delete). One question per event; if the wearer declines or ignores it, do not bring this set up again.",
     );
   }
   out.push("Do not call any other glasses tool in this turn.");
