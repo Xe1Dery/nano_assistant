@@ -17,6 +17,10 @@
 const TOOL_NAMES = {
   listProjects: "list_projects",
   tasksOfProject: "get_project_with_undone_tasks",
+  // Account-wide fallback used for the virtual Inbox, whose list_projects id
+  // ("inbox") may not resolve in project-scoped tools (real id is per-user,
+  // e.g. "inbox128577262").
+  undoneByTime: "list_undone_tasks_by_time_query",
 };
 
 const SCAN_CONFIG = {
@@ -111,7 +115,29 @@ async function main() {
       { project_id: project.id },
       { projectId: project.id },
     ]);
-    tasks.push(...normalizeTasks(raw));
+    let rows = normalizeTasks(raw);
+    // Virtual Inbox: the scoped call can answer empty for the "inbox" alias;
+    // fall back to the account-wide undone-by-time queries (overdue window +
+    // next week), deduped against everything already collected.
+    const isInbox = /^inbox$/i.test(String(project.id)) || /inbox/i.test(String(project.name));
+    if (!rows.length && isInbox) {
+      const seen = new Set(tasks.map((t) => t.id));
+      for (const q of ["last7day", "today", "next7day"]) {
+        try {
+          const wide = await mcpCallAny(TOOL_NAMES.undoneByTime, [
+            { query_command: q },
+            { queryCommand: q },
+          ]);
+          for (const t of normalizeTasks(wide)) {
+            if (!seen.has(t.id)) { seen.add(t.id); tasks.push(t); }
+          }
+        } catch {
+          /* one query shape failing must not kill the scan */
+        }
+      }
+      continue;
+    }
+    tasks.push(...rows);
   }
   const plan = planScan(trigger?.state ?? null, tasks, nowMs);
   const result = {

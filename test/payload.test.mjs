@@ -88,6 +88,25 @@ test("an unavailable MCP tool fails loudly, not silently", async () => {
   );
 });
 
+test("virtual Inbox with an empty scoped answer falls back to account-wide queries", async () => {
+  const calls = [];
+  const due = new Date(Date.now() - 60_000).toISOString();
+  const mcp = {
+    ticktick: {
+      async list_projects() { calls.push("list_projects"); return JSON.stringify({ id: "inbox", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() { calls.push("scoped"); return JSON.stringify({ project: null, tasks: [] }); },
+      async list_undone_tasks_by_time_query(args) {
+        calls.push(`wide:${args.query_command}`);
+        if (args.query_command !== "last7day") return "[]";
+        return JSON.stringify({ tasks: [{ id: "tI", title: "Тест напоминания", dueDate: due, status: 0 }] });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.match(result.notify, /"task_id":"tI"/);
+  assert.ok(calls.includes("wide:last7day"));
+});
+
 test("the payload also resolves camelCased tool names (code-mode renames them)", async () => {
   const calls = [];
   const due = new Date(Date.now() - 60_000).toISOString();
