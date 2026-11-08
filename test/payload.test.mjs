@@ -88,6 +88,23 @@ test("an unavailable MCP tool fails loudly, not silently", async () => {
   );
 });
 
+test("the payload also resolves camelCased tool names (code-mode renames them)", async () => {
+  const calls = [];
+  const due = new Date(Date.now() - 60_000).toISOString();
+  const camelMcp = {
+    ticktick: {
+      async listProjects() { calls.push("listProjects"); return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async getProjectWithUndoneTasks(args) {
+        calls.push(`getProjectWithUndoneTasks:${args.project_id}`);
+        return JSON.stringify({ id: "p1", tasks: [{ id: "t5", title: "Camel", dueDate: due, status: 0 }] });
+      },
+    },
+  };
+  const result = await run(camelMcp, { state: null, quiet: OPEN });
+  assert.deepEqual(calls, ["listProjects", "getProjectWithUndoneTasks:p1"]);
+  assert.match(result.notify, /"task_id":"t5"/);
+});
+
 test("quiet hours: no MCP calls, no notify, ledger passed through, wake capped", async () => {
   const calls = [];
   const state = { version: 1, lastScanAt: 1, tasks: { t1: { title: "x", dueMs: Date.now() - 60_000, status: "due", repeat: 0, lastNotifiedAt: 0 } } };

@@ -356,12 +356,20 @@ const SCAN_CONFIG = {
   quiet: { enabled: true, activeStart: "08:00", activeEnd: "22:30", timezone: "system" },
 };
 
+/** snake_case -> camelCase: the code-mode runtime renames MCP tools. */
+function toCamel(name) {
+  return name.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+
 function mcpCall(tool, args) {
   // Literal `MCP.ticktick` on purpose: the payload runtime scans the script
   // text for server references to decide which MCP servers to start, and
   // optional chaining (MCP?.ticktick) may not match that scan.
   const server = typeof MCP === "object" && MCP ? MCP.ticktick : undefined;
-  const fn = server ? server[tool] : undefined;
+  // The code-mode runtime exposes tools camelCased (list_projects ->
+  // listProjects, verified 2026-11-09); try the exact name first, then the
+  // camel form, so the payload works under either convention.
+  const fn = server ? (server[tool] ?? server[toCamel(tool)]) : undefined;
   if (typeof fn !== "function") {
     // Dump the runtime shape: which servers exist, what kind of member the
     // tool is (function vs handle object), and a sample of its keys.
