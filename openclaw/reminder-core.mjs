@@ -129,8 +129,10 @@ export function normalizeTasks(raw) {
     const id = t.id ?? t.taskId ?? t.uid;
     if (id === undefined || id === null) continue;
     const status = t.status ?? t.state ?? 0;
-    const closed = status === 2 || status === "completed" || status === "done"
-      || t.completed === true || Boolean(t.completedTime);
+    // Only explicit closed markers count. A stale completedTime must NOT
+      // close a task: TickTick keeps it on some open tasks, and a false
+      // "closed" silently deletes the ledger entry (missed reminders).
+    const closed = status === 2 || status === "completed" || status === "done" || t.completed === true;
     const dueRaw = t.dueDate ?? t.due ?? t.dueAt ?? t.due_time ?? null;
     const dueMs = dueRaw ? Date.parse(dueRaw) : NaN;
     out.push({

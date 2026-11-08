@@ -131,8 +131,10 @@ function normalizeTasks(raw) {
     const id = t.id ?? t.taskId ?? t.uid;
     if (id === undefined || id === null) continue;
     const status = t.status ?? t.state ?? 0;
-    const closed = status === 2 || status === "completed" || status === "done"
-      || t.completed === true || Boolean(t.completedTime);
+    // Only explicit closed markers count. A stale completedTime must NOT
+      // close a task: TickTick keeps it on some open tasks, and a false
+      // "closed" silently deletes the ledger entry (missed reminders).
+    const closed = status === 2 || status === "completed" || status === "done" || t.completed === true;
     const dueRaw = t.dueDate ?? t.due ?? t.dueAt ?? t.due_time ?? null;
     const dueMs = dueRaw ? Date.parse(dueRaw) : NaN;
     out.push({
@@ -474,9 +476,21 @@ async function main() {
     tasks.push(...rows);
   }
   const plan = planScan(trigger?.state ?? null, tasks, nowMs);
+  const nowIso = new Date(nowMs).toISOString();
   const result = {
     state: plan.state,
     nextCheck: nextCheckDuration(plan.nextCheckMs, nowMs),
+  };
+  // Self-observability: a compact scan summary rides along in the persisted
+  // state (visible via `automations get`), so an empty scan is explainable
+  // without redeploying anything.
+  result.state.diag = {
+    at: nowIso,
+    projects: projects.map((p) => p.name),
+    tasks: tasks.length,
+    withDue: tasks.filter((t) => t.dueMs).length,
+    closed: tasks.filter((t) => t.closed).length,
+    events: plan.events.length,
   };
   if (plan.events.length) {
     result.notify = renderEvent(plan.events[0]);

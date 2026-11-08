@@ -138,16 +138,21 @@ test("normalizeTasks survives the field-name variants and marks closed", () => {
       { id: "2", title: "b", due: "2026-11-09T12:00:00Z", status: 2 },
       { taskId: "3", name: "c", completedTime: "2026-11-08T10:00:00Z" },
       { id: "4", title: "no date" },
+      { id: "5", title: "e", status: 0, completed: true, completedTime: "2026-02-18T09:47:54+0500" },
       null,
       { title: "no id" },
     ],
   });
-  assert.equal(rows.length, 4);
+  assert.equal(rows.length, 5);
   assert.equal(rows[0].dueMs, Date.parse("2026-11-09T12:00:00.000+0000"));
   assert.equal(rows[1].closed, true);
-  assert.equal(rows[2].closed, true);
+  // A lone completedTime does NOT mean closed: the undone-tasks endpoint can
+  // still carry stale timestamps on open tasks (observed 2026-11-09).
+  assert.equal(rows[2].closed, false);
   assert.equal(rows[2].id, "3");
   assert.equal(rows[3].dueMs, null);
+  // An explicit completed:true flag still closes, even with a stale time.
+  assert.equal(rows[4].closed, true);
 });
 
 test("normalizeProjects handles arrays and wrappers", () => {
