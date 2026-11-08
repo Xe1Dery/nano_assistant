@@ -9,6 +9,7 @@ import {
   computeNextCheck,
   renderEvent,
   nextCheckDuration,
+  activeWindow,
 } from "../openclaw/reminder-core.mjs";
 
 const T0 = Date.parse("2026-11-09T10:00:00Z");
@@ -239,4 +240,37 @@ test("normalizeTasks reads tasks out of the project-detail JSONL wrapper", () =>
     JSON.stringify({ id: "b", tasks: [{ id: "t2", title: "y", dueDate: "2026-11-09T13:00:00Z" }] }),
   ].join("\n");
   assert.deepEqual(normalizeTasks(many).map((r) => r.id), ["t1", "t2"]);
+});
+test("planScan with fire:false never emits events or marks notified", () => {
+  const past = new Date(T0 - min(10)).toISOString();
+  const tasks = normalizeTasks([{ id: "t1", title: "x", dueDate: past, status: 0 }]);
+  const plan = planScan(null, tasks, T0, { fire: false });
+  assert.deepEqual(plan.events, []);
+  assert.equal(plan.state.tasks.t1.status, "due"); // tracked, not notified
+  // Backoff re-arms to due but the event stays suppressed.
+  const state = { version: 1, tasks: { t1: { title: "x", dueMs: T0 - min(10), status: "notified", repeat: 1, lastNotifiedAt: T0 - min(6) } } };
+  const again = planScan(state, tasks, T0, { fire: false });
+  assert.deepEqual(again.events, []);
+  assert.equal(again.state.tasks.t1.status, "due"); // re-armed, un-fired
+});
+
+test("activeWindow gates by local wall clock and computes the next opening", () => {
+  const quiet = { enabled: true, activeStart: "08:00", activeEnd: "22:30", timezone: "UTC" };
+  const at = (iso) => Date.parse(iso);
+  // Inside the window.
+  assert.equal(activeWindow(at("2026-11-09T12:00:00Z"), quiet).active, true);
+  // Boundary: 08:00 sharp is active, 22:30 sharp is not.
+  assert.equal(activeWindow(at("2026-11-09T08:00:00Z"), quiet).active, true);
+  assert.equal(activeWindow(at("2026-11-09T22:30:00Z"), quiet).active, false);
+  // Night, before opening -> wakes at today's 08:00.
+  const night = activeWindow(at("2026-11-09T02:00:00Z"), quiet);
+  assert.equal(night.active, false);
+  assert.equal(night.wakeMs, at("2026-11-09T08:00:00Z"));
+  // Evening, after close -> wakes tomorrow's 08:00.
+  const eve = activeWindow(at("2026-11-09T23:30:00Z"), quiet);
+  assert.equal(eve.active, false);
+  assert.equal(eve.wakeMs, at("2026-11-10T08:00:00Z"));
+  // Disabled or malformed config fails open.
+  assert.equal(activeWindow(at("2026-11-09T02:00:00Z"), { ...quiet, enabled: false }).active, true);
+  assert.equal(activeWindow(at("2026-11-09T02:00:00Z"), { ...quiet, activeStart: "8am" }).active, true);
 });

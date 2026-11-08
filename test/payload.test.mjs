@@ -15,6 +15,21 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = readFileSync(join(root, "openclaw", "reminder-scan.js"), "utf8");
 const run = new Function("MCP", "trigger", `return (async () => { ${source} })()`);
 
+// The payload enforces quiet hours from its own config; tests pin the window
+// open via trigger.quiet so they pass at any wall clock.
+const OPEN = { enabled: false };
+
+/** A window closed at the current wall clock, for the quiet-hours test. */
+function closedWindowNow() {
+  const hh = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", hour: "2-digit", hour12: false })
+    .format(new Date()));
+  return {
+    enabled: true, timezone: "UTC",
+    activeStart: `${String((hh + 1) % 24).padStart(2, "0")}:00`,
+    activeEnd: `${String((hh + 2) % 24).padStart(2, "0")}:00`,
+  };
+}
+
 function fakeMcp(calls) {
   const due = new Date(Date.now() + 5 * 60_000).toISOString();
   return {
@@ -40,7 +55,7 @@ function fakeMcp(calls) {
 
 test("generated payload runs one scan and returns the contract object", async () => {
   const calls = [];
-  const result = await run(fakeMcp(calls), { state: null });
+  const result = await run(fakeMcp(calls), { state: null, quiet: OPEN });
   assert.deepEqual(calls, ["list_projects", "get_project_with_undone_tasks:p1"]); // NOTE list skipped
   assert.equal(typeof result.nextCheck, "string");
   assert.match(result.nextCheck, /^\d+m$/);
@@ -58,7 +73,7 @@ test("a due task makes the payload notify with the courier contract", async () =
       },
     },
   };
-  const result = await run(mcp, { state: null });
+  const result = await run(mcp, { state: null, quiet: OPEN });
   assert.equal(result.wake, "now");
   assert.match(result.notify, /REMINDER_EVENT v1/);
   assert.match(result.notify, /glasses\.reminder_show/);
@@ -68,7 +83,18 @@ test("a due task makes the payload notify with the courier contract", async () =
 
 test("an unavailable MCP tool fails loudly, not silently", async () => {
   await assert.rejects(
-    () => run({ ticktick: {} }, { state: null }),
+    () => run({ ticktick: {} }, { state: null, quiet: OPEN }),
     /unavailable/,
   );
+});
+
+test("quiet hours: no MCP calls, no notify, ledger passed through, wake capped", async () => {
+  const calls = [];
+  const state = { version: 1, lastScanAt: 1, tasks: { t1: { title: "x", dueMs: Date.now() - 60_000, status: "due", repeat: 0, lastNotifiedAt: 0 } } };
+  const result = await run(fakeMcp(calls), { state, quiet: closedWindowNow() });
+  assert.equal(calls.length, 0); // no TickTick traffic while quiet
+  assert.equal(result.notify, undefined);
+  assert.deepEqual(result.state, state); // ledger survives untouched
+  const mins = Number(/^(\d+)m$/.exec(result.nextCheck)[1]);
+  assert.ok(mins >= 1 && mins <= 30, `wake ${result.nextCheck} must be 1..30m`);
 });

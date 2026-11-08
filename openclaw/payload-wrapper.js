@@ -24,6 +24,10 @@ const SCAN_CONFIG = {
   projects: [],
   // Skip projects of these kinds (TickTick has "note" lists alongside tasks).
   skipKinds: ["note"],
+  // Quiet hours, enforced inside the payload so the job needs no
+  // --active-hours flags (older CLIs lack them). "system" = the server's own
+  // clock; or set an IANA zone like "Europe/Moscow".
+  quiet: { enabled: true, activeStart: "08:00", activeEnd: "22:30", timezone: "system" },
 };
 
 function mcpCall(tool, args) {
@@ -50,6 +54,20 @@ async function mcpCallAny(tool, argShapes) {
 
 async function main() {
   const nowMs = Date.now();
+  // Quiet hours: the ledger keeps tracking, nothing fires, wake near the
+  // window opening (capped so the job stays observable in run history).
+  // trigger.quiet overrides SCAN_CONFIG — used by the test harness to pin the
+  // window open; the production runtime never sets it.
+  const window = activeWindow(nowMs, trigger?.quiet ?? SCAN_CONFIG.quiet);
+  if (!window.active) {
+    const wakeMs = Math.min(window.wakeMs, nowMs + 30 * 60_000);
+    return {
+      // Pass the ledger through untouched: re-running planScan with an empty
+      // task list would prune every entry. The first active tick refreshes it.
+      state: trigger?.state ?? { version: 1, lastScanAt: nowMs, tasks: {} },
+      nextCheck: nextCheckDuration(wakeMs, nowMs),
+    };
+  }
   const projectsRaw = await mcpCall(TOOL_NAMES.listProjects, {});
   const skip = SCAN_CONFIG.skipKinds.map((k) => String(k).toUpperCase());
   let projects = normalizeProjects(projectsRaw)

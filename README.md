@@ -53,21 +53,23 @@ ledger never stores them; it only tracks notification bookkeeping.
 5. **Create the automation job** (script payload, main session so the notify
    lands as a system event Nano acts on):
    ```sh
-   openclaw automations add \
-     --name "nano-reminder-scan" \
-     --every 5m \
-     --script /srv/openclaw/scripts/reminder-scan.js \
-     --session main \
-     --tools "ticktick__*" \
-     --pacing-min 1m --pacing-max 30m \
-     --active-hours-start 08:00 --active-hours-end 22:30 --active-hours-timezone user \
-     --no-deliver
-   ```
-   Notes: `--tools` must name the server exactly (`ticktick__*`) or the script
-   gets no MCP namespace; pacing lets `nextCheck` self-pace between 1m and 30m
-   (so a 10:07 deadline is caught at ~10:07, not on a 5-minute grid);
-   `activeHours` is the quiet window — a due task inside quiet hours fires at
-   the first tick after the window opens.
+    openclaw automations add \
+      --name "nano-reminder-scan" \
+      --every 5m \
+      --script /srv/openclaw/scripts/reminder-scan.js \
+      --session main \
+      --tools "ticktick__*" \
+      --pacing-min 1m --pacing-max 30m \
+      --no-deliver
+    ```
+    Notes: `--tools` must name the server exactly (`ticktick__*`) or the script
+    gets no MCP namespace; pacing lets `nextCheck` self-pace between 1m and 30m
+    (so a 10:07 deadline is caught at ~10:07, not on a 5-minute grid). Quiet
+    hours are enforced **inside the payload** (`SCAN_CONFIG.quiet` in
+    `payload-wrapper.js`, default 08:00–22:30 on the server's clock — edit and
+    rebuild to change), so the job needs no `--active-hours` flags and the
+    behavior does not depend on the CLI version. A task that falls due during
+    quiet hours fires at the first tick after the window opens.
 6. **Standing order.** Append `openclaw/AGENTS.reminder.md` to Nano's AGENTS.md.
 7. **Faceclaw side.** The phone app must expose `glasses.reminder_show`
    (faceclaw repo, >= versionCode 812) with proactive calls enabled

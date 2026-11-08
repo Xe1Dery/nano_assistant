@@ -79,10 +79,20 @@ function parseToolPayload(value) {
 /** Unwrap a project-detail payload: tasks may sit under project.tasks or tasks. */
 function taskRows(payload) {
   const parsed = parseToolPayload(payload);
-  if (Array.isArray(parsed)) return parsed.flatMap((item) => taskRows(item) ?? []);
+  if (Array.isArray(parsed)) {
+    // Rows may be project-detail objects (expand their tasks) or bare tasks.
+    if (parsed.some((item) => item && Array.isArray(item.tasks))) {
+      return parsed.flatMap((item) => taskRows(item) ?? []);
+    }
+    return parsed;
+  }
   if (parsed && typeof parsed === "object") {
     if (Array.isArray(parsed.tasks)) return parsed.tasks;
     if (parsed.project && Array.isArray(parsed.project.tasks)) return parsed.project.tasks;
+    // A bare task object as the whole answer.
+    if (parsed.id !== undefined && (parsed.title !== undefined || parsed.content !== undefined)) {
+      return [parsed];
+    }
   }
   return null;
 }
@@ -152,6 +162,9 @@ function normalizeProjects(raw) {
  */
 function planScan(state, tasks, nowMs, config = {}) {
   const cfg = { ...DEFAULTS, ...config };
+  // fire === false: quiet hours. The ledger updates normally, but nothing is
+  // queued for notification and nothing is marked notified.
+  const fire = cfg.fire !== false;
   const prev = state?.tasks ?? {};
   const next = { version: 1, lastScanAt: nowMs, tasks: {} };
   const events = [];
@@ -176,7 +189,7 @@ function planScan(state, tasks, nowMs, config = {}) {
     next.tasks[task.id] = entry;
 
     const fireAt = entry.dueMs - cfg.leadMs;
-    if (entry.status === "due" && nowMs >= fireAt) {
+    if (fire && entry.status === "due" && nowMs >= fireAt) {
       candidates.push({ task: entry, id: task.id });
     } else if (entry.status === "notified") {
       const wait = cfg.backoff[Math.min(entry.repeat - 1, cfg.backoff.length - 1)];
@@ -185,7 +198,7 @@ function planScan(state, tasks, nowMs, config = {}) {
         entry.status = "stale"; // nagged enough; wait for a task change
       } else if (nowMs >= retryAt) {
         entry.status = "due";
-        candidates.push({ task: entry, id: task.id });
+        if (fire) candidates.push({ task: entry, id: task.id });
       }
     }
   }
@@ -213,6 +226,45 @@ function planScan(state, tasks, nowMs, config = {}) {
 
   pruneLedger(next, cfg);
   return { events, state: next, nextCheckMs: computeNextCheck(next, nowMs, cfg) };
+}
+
+/** Minutes since local midnight for `nowMs` in IANA zone `tz`. */
+function localDayMinutes(nowMs, tz) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date(nowMs));
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return (hour % 24) * 60 + minute;
+}
+
+function parseClock(value) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(value ?? ""));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+/**
+ * Quiet-window gate: reminders may fire between activeStart and activeEnd
+ * (local wall clock in `timezone`). Returns { active: true } or
+ * { active: false, wakeMs } with wakeMs = the next window opening. A
+ * malformed config opens the window (fail-open: silence is worse than noise).
+ */
+function activeWindow(nowMs, quiet) {
+  if (!quiet?.enabled) return { active: true };
+  const start = parseClock(quiet.activeStart);
+  const end = parseClock(quiet.activeEnd);
+  if (start === null || end === null || start >= end) return { active: true };
+  const tz = quiet.timezone && quiet.timezone !== "system"
+    ? quiet.timezone
+    : Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = localDayMinutes(nowMs, tz);
+  if (now >= start && now < end) return { active: true };
+  // Local midnight instant, then jump to the next activeStart. DST shift days
+  // can be off by an hour; the next tick re-evaluates, so it self-corrects.
+  const midnight = nowMs - now * 60_000;
+  let wakeMs = midnight + start * 60_000;
+  if (wakeMs <= nowMs) wakeMs += 86_400_000;
+  return { active: false, wakeMs };
 }
 
 /** Earliest moment any ledger entry wants attention, or null. */
@@ -298,6 +350,10 @@ const SCAN_CONFIG = {
   projects: [],
   // Skip projects of these kinds (TickTick has "note" lists alongside tasks).
   skipKinds: ["note"],
+  // Quiet hours, enforced inside the payload so the job needs no
+  // --active-hours flags (older CLIs lack them). "system" = the server's own
+  // clock; or set an IANA zone like "Europe/Moscow".
+  quiet: { enabled: true, activeStart: "08:00", activeEnd: "22:30", timezone: "system" },
 };
 
 function mcpCall(tool, args) {
@@ -324,6 +380,20 @@ async function mcpCallAny(tool, argShapes) {
 
 async function main() {
   const nowMs = Date.now();
+  // Quiet hours: the ledger keeps tracking, nothing fires, wake near the
+  // window opening (capped so the job stays observable in run history).
+  // trigger.quiet overrides SCAN_CONFIG — used by the test harness to pin the
+  // window open; the production runtime never sets it.
+  const window = activeWindow(nowMs, trigger?.quiet ?? SCAN_CONFIG.quiet);
+  if (!window.active) {
+    const wakeMs = Math.min(window.wakeMs, nowMs + 30 * 60_000);
+    return {
+      // Pass the ledger through untouched: re-running planScan with an empty
+      // task list would prune every entry. The first active tick refreshes it.
+      state: trigger?.state ?? { version: 1, lastScanAt: nowMs, tasks: {} },
+      nextCheck: nextCheckDuration(wakeMs, nowMs),
+    };
+  }
   const projectsRaw = await mcpCall(TOOL_NAMES.listProjects, {});
   const skip = SCAN_CONFIG.skipKinds.map((k) => String(k).toUpperCase());
   let projects = normalizeProjects(projectsRaw)
