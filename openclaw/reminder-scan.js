@@ -359,7 +359,24 @@ const SCAN_CONFIG = {
 function mcpCall(tool, args) {
   const fn = MCP?.ticktick?.[tool];
   if (typeof fn !== "function") {
-    throw new Error(`MCP tool ticktick.${tool} unavailable; check the job's --tools and the probe output`);
+    // Dump the runtime shape: which servers exist, what kind of member the
+    // tool is (function vs handle object), and a sample of its keys.
+    const servers = MCP ? Object.keys(MCP) : [];
+    const server = MCP?.ticktick;
+    const detail = server == null
+      ? "server namespace absent"
+      : typeof server !== "object"
+        ? `namespace is ${typeof server}`
+        : (() => {
+            const keys = Object.keys(server);
+            const member = server[tool];
+            const memberType = typeof member;
+            const memberKeys = member && typeof member === "object"
+              ? Object.keys(member).slice(0, 12).join(",")
+              : "";
+            return `members(${keys.length})=[${keys.slice(0, 15).join(",")}] ${tool}:${memberType}${memberKeys ? ` keys=${memberKeys}` : ""}`;
+          })();
+    throw new Error(`MCP tool ticktick.${tool} unavailable; servers=[${servers.join(",")}] ${detail}`);
   }
   return fn(args ?? {});
 }
