@@ -203,6 +203,23 @@ test("computeNextCheck ignores stale and null-due entries", () => {
 });
 
 test("parseToolPayload handles the real server's JSONL text", () => {
+  // Several pretty-printed objects concatenated — the actual list_projects
+  // answer shape (verified 2026-11-09): line-splitting cannot parse this.
+  const prettyMany = [
+    JSON.stringify({ id: "a", name: "GTD", kind: "TASK" }, null, 2),
+    JSON.stringify({ id: "b", name: "Notes", kind: "NOTE" }, null, 2),
+  ].join("\n");
+  assert.deepEqual(parseToolPayload(prettyMany), [
+    { id: "a", name: "GTD", kind: "TASK" },
+    { id: "b", name: "Notes", kind: "NOTE" },
+  ]);
+  // Nested braces and strings containing braces must not confuse the scanner.
+  const tricky = JSON.stringify({ id: "x", content: '}{ [ ] "escaped" \\ done' }, null, 2)
+    + "\n" + JSON.stringify({ id: "y" });
+  assert.deepEqual(parseToolPayload(tricky), [
+    { id: "x", content: '}{ [ ] "escaped" \\ done' },
+    { id: "y" },
+  ]);
   // Exactly the shape probe-tools printed for list_projects: one JSON per line.
   const jsonl = [
     JSON.stringify({ id: "6996", name: "GTD", kind: "TASK" }),

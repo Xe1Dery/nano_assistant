@@ -39,6 +39,48 @@ const DEFAULTS = {
  * objects (one record per line, verified against mcp.ticktick.com), and the
  * MCP envelope may wrap either. Every shape seen so far funnels through here.
  */
+/**
+ * Extract top-level JSON objects/arrays from a text blob by brace matching
+ * (string- and escape-aware). Handles the real server's shapes: one pretty-
+ * printed object, several pretty-printed objects concatenated (list_projects),
+ * or single-line JSONL. Returns [] when nothing parses.
+ */
+function extractJsonValues(text) {
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\\\") escaped = true;
+      else if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") { inString = true; continue; }
+    if (ch === "{" || ch === "[") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        try {
+          out.push(JSON.parse(text.slice(start, i + 1)));
+        } catch {
+          /* not JSON after all; keep scanning */
+        }
+        start = -1;
+      } else if (depth < 0) {
+        depth = 0;
+        start = -1;
+      }
+    }
+  }
+  return out;
+}
+
 function parseToolPayload(value) {
   if (value == null) return null;
   if (typeof value === "string") {
@@ -48,19 +90,10 @@ function parseToolPayload(value) {
       try {
         return JSON.parse(trimmed);
       } catch {
-        /* fall through to line-wise parsing */
+        /* multiple concatenated values; fall through to extraction */
       }
     }
-    const rows = [];
-    for (const part of value.split(/\n+/)) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      try {
-        rows.push(JSON.parse(trimmed));
-      } catch {
-        // Not JSON (a status line, prose); ignore.
-      }
-    }
+    const rows = extractJsonValues(trimmed);
     if (!rows.length) return null;
     return rows.length === 1 ? rows[0] : rows;
   }
