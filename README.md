@@ -40,8 +40,9 @@ ledger never stores them; it only tracks notification bookkeeping.
 2. **MCP server.** Merge `openclaw/mcp-config.snippet.json5` into the OpenClaw
    config (server name must stay `ticktick` — the payload calls
    `MCP.ticktick.*`). `openclaw config validate && openclaw gateway restart`.
-3. **Probe the tool names** (the payload assumes `list_projects` /
-   `get_project_tasks`; confirm against reality and adjust
+3. **Probe the tool names** (the payload is wired for `list_projects` /
+   `get_project_with_undone_tasks`, verified against the live server on
+   2026-11-08; re-check after any TickTick change and adjust
    `openclaw/payload-wrapper.js` TOOL_NAMES if they differ, then rebuild):
    ```sh
    TICKTICK_TOKEN=... node bin/probe-tools.mjs
