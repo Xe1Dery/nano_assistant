@@ -53,23 +53,27 @@ ledger never stores them; it only tracks notification bookkeeping.
 5. **Create the automation job** (script payload, main session so the notify
    lands as a system event Nano acts on):
    ```sh
-    openclaw automations add \
-      --name "nano-reminder-scan" \
-      --every 5m \
-      --script /srv/openclaw/scripts/reminder-scan.js \
-      --session main \
-      --tools "ticktick__*" \
-      --pacing-min 1m --pacing-max 30m \
-      --no-deliver
-    ```
-    Notes: `--tools` must name the server exactly (`ticktick__*`) or the script
-    gets no MCP namespace; pacing lets `nextCheck` self-pace between 1m and 30m
-    (so a 10:07 deadline is caught at ~10:07, not on a 5-minute grid). Quiet
-    hours are enforced **inside the payload** (`SCAN_CONFIG.quiet` in
-    `payload-wrapper.js`, default 08:00–22:30 on the server's clock — edit and
-    rebuild to change), so the job needs no `--active-hours` flags and the
-    behavior does not depend on the CLI version. A task that falls due during
-    quiet hours fires at the first tick after the window opens.
+     openclaw automations add \
+       --name "nano-reminder-scan" \
+       --every 5m \
+       --script /srv/openclaw/scripts/reminder-scan.js \
+       --session main \
+       --tools "ticktick__*" \
+       --pacing-min 1m --pacing-max 5m
+     ```
+     Notes: `--tools` must name the server exactly (`ticktick__*`) or the script
+     gets no MCP namespace; pacing lets `nextCheck` self-pace between 1m and 5m.
+     The payload returns an honest `nextCheck` — the nearest real wake need
+     (a future deadline, a backoff retry, or pacing-min when candidates are
+     still queued), so a 10:07 deadline is caught at ~10:07 and a task created
+     between ticks waits at most the base `--every` period. Do not pass
+     `--no-deliver`: rejected for main-session jobs on 2026.11.1 (the main-session
+     system event IS the delivery). Quiet
+     hours are enforced **inside the payload** (`SCAN_CONFIG.quiet` in
+     `payload-wrapper.js`, default 08:00–22:30 on the server's clock — edit and
+     rebuild to change), so the job needs no `--active-hours` flags and the
+     behavior does not depend on the CLI version. A task that falls due during
+     quiet hours fires at the first tick after the window opens.
 6. **Standing order.** Append `openclaw/AGENTS.reminder.md` to Nano's AGENTS.md.
 7. **Faceclaw side.** The phone app must expose `glasses.reminder_show`
    (faceclaw repo, >= versionCode 812) with proactive calls enabled
@@ -99,8 +103,11 @@ reminder cycle re-notifies.
 
 ## Known limits
 
-- TickTick has no webhooks; everything is polled. Worst-case lateness of a
-  reminder ≈ pacing-min (1m) + scan duration (a few seconds per project).
+- TickTick has no webhooks; everything is polled. A deadline already known to
+  the ledger fires within pacing-min (1m) + scan duration; a task created
+  between scans is detected on the next tick, so its worst-case lateness is
+  the base `--every` period (lower it to 2m if that matters; a scan is ~5 MCP
+  calls and a few seconds, no model turn unless a reminder fires).
 - One popup per scan tick; many simultaneous deadlines serialize ~1/minute.
 - The blocking `glasses.reminder_show` call needs the MCP client's tool timeout
   to cover `ttl_ms + ~35s` (the phone tool declares this; OpenClaw's default
