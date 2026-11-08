@@ -89,6 +89,14 @@ function taskRows(payload) {
   if (parsed && typeof parsed === "object") {
     if (Array.isArray(parsed.tasks)) return parsed.tasks;
     if (parsed.project && Array.isArray(parsed.project.tasks)) return parsed.project.tasks;
+    // Envelope wrappers: {result:{tasks:[...]}}, {data:{tasks:[...]}}.
+    for (const key of ["result", "data"]) {
+      const inner = parsed[key];
+      if (inner && typeof inner === "object") {
+        const rows = taskRows(inner);
+        if (rows) return rows;
+      }
+    }
     // A bare task object as the whole answer.
     if (parsed.id !== undefined && (parsed.title !== undefined || parsed.content !== undefined)) {
       return [parsed];
