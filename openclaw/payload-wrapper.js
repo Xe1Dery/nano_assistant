@@ -31,12 +31,15 @@ const SCAN_CONFIG = {
 };
 
 function mcpCall(tool, args) {
-  const fn = MCP?.ticktick?.[tool];
+  // Literal `MCP.ticktick` on purpose: the payload runtime scans the script
+  // text for server references to decide which MCP servers to start, and
+  // optional chaining (MCP?.ticktick) may not match that scan.
+  const server = typeof MCP === "object" && MCP ? MCP.ticktick : undefined;
+  const fn = server ? server[tool] : undefined;
   if (typeof fn !== "function") {
     // Dump the runtime shape: which servers exist, what kind of member the
     // tool is (function vs handle object), and a sample of its keys.
     const servers = MCP ? Object.keys(MCP) : [];
-    const server = MCP?.ticktick;
     const detail = server == null
       ? "server namespace absent"
       : typeof server !== "object"
