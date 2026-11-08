@@ -1,0 +1,17 @@
+// Merge into the OpenClaw gateway config (openclaw.json / config.toml equivalent).
+// The official TickTick MCP server; token from TickTick web:
+// Settings -> Account -> API Token. Keep the config file chmod 600.
+// After merging: openclaw config validate && openclaw gateway restart
+{
+  mcp: {
+    servers: {
+      ticktick: {
+        transport: "streamable-http",
+        url: "https://mcp.ticktick.com",
+        headers: {
+          Authorization: "Bearer PASTE_TICKTICK_API_TOKEN_HERE",
+        },
+      },
+    },
+  },
+}
