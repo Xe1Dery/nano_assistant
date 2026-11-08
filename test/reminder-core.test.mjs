@@ -276,6 +276,31 @@ test("planScan with fire:false never emits events or marks notified", () => {
   assert.equal(again.state.tasks.t1.status, "due"); // re-armed, un-fired
 });
 
+test("planScan keeps persisted state under the byte budget", () => {
+  // 300 tasks with long titles: far past 16 KB if kept verbatim.
+  const tasks = [];
+  for (let i = 0; i < 300; i++) {
+    tasks.push({
+      id: `t${i}`,
+      title: "Очень длинный заголовок задачи, который занимает место в ledger ".repeat(3) + i,
+      dueMs: T0 + min(i),
+      closed: false,
+    });
+  }
+  const plan = planScan(null, tasks, T0);
+  const bytes = new TextEncoder().encode(JSON.stringify(plan.state)).length;
+  assert.ok(bytes <= DEFAULTS.stateBudgetBytes, `state is ${bytes} bytes`);
+  // Titles in the ledger are clipped.
+  for (const e of Object.values(plan.state.tasks)) {
+    assert.ok(e.title.length <= DEFAULTS.maxTitleChars, `title too long: ${e.title.length}`);
+  }
+  // The due-now task still fires, with its FULL title in the event.
+  const nowTask = { id: "hot", title: "Полный заголовок без обрезки".repeat(5), dueMs: T0 - 1000, closed: false };
+  const hot = planScan(null, [nowTask], T0);
+  assert.equal(hot.events.length, 1);
+  assert.equal(hot.events[0].title, nowTask.title);
+});
+
 test("activeWindow gates by local wall clock and computes the next opening", () => {
   const quiet = { enabled: true, activeStart: "08:00", activeEnd: "22:30", timezone: "UTC" };
   const at = (iso) => Date.parse(iso);

@@ -30,7 +30,11 @@ const DEFAULTS = {
   minNextCheck: "1m",
   maxNextCheck: "30m",
   /** Ledger cap; oldest stale/notified entries are pruned past it. */
-  maxEntries: 200,
+  maxEntries: 60,
+  /** Hard budget for the persisted state (OpenClaw caps it at 16 KB). */
+  stateBudgetBytes: 14_000,
+  /** Ledger titles are clipped to this length (the popup keeps the full one). */
+  maxTitleChars: 60,
 };
 
 /**
@@ -170,9 +174,10 @@ function normalizeTasks(raw) {
     const closed = status === 2 || status === "completed" || status === "done" || t.completed === true;
     const dueRaw = t.dueDate ?? t.due ?? t.dueAt ?? t.due_time ?? null;
     const dueMs = dueRaw ? Date.parse(dueRaw) : NaN;
+    const fullTitle = String(t.title ?? t.name ?? t.content ?? "(task)");
     out.push({
       id: String(id),
-      title: String(t.title ?? t.name ?? t.content ?? "(task)"),
+      title: fullTitle,
       dueMs: Number.isFinite(dueMs) ? dueMs : null,
       closed,
     });
@@ -212,22 +217,24 @@ function planScan(state, tasks, nowMs, config = {}) {
   const next = { version: 1, lastScanAt: nowMs, tasks: {} };
   const events = [];
   const candidates = [];
+  const fullTitles = new Map();
 
   for (const task of tasks) {
     const old = prev[task.id];
     let entry;
     if (task.closed) continue; // closed elsewhere: ledger entry simply gone
+    fullTitles.set(task.id, task.title);
     if (!task.dueMs) {
       // Deadline removed: keep tracking quietly, no reminder without a date.
-      entry = { title: task.title, dueMs: null, status: "due", repeat: 0, lastNotifiedAt: 0 };
+      entry = { title: clipTitle(task.title, cfg.maxTitleChars), dueMs: null, status: "due", repeat: 0, lastNotifiedAt: 0 };
       next.tasks[task.id] = entry;
       continue;
     }
     const dueChanged = !old || old.dueMs !== task.dueMs;
     if (dueChanged) {
-      entry = { title: task.title, dueMs: task.dueMs, status: "due", repeat: 0, lastNotifiedAt: 0 };
+      entry = { title: clipTitle(task.title, cfg.maxTitleChars), dueMs: task.dueMs, status: "due", repeat: 0, lastNotifiedAt: 0 };
     } else {
-      entry = { ...old, title: task.title };
+      entry = { ...old, title: clipTitle(task.title, cfg.maxTitleChars) };
     }
     next.tasks[task.id] = entry;
 
@@ -260,7 +267,8 @@ function planScan(state, tasks, nowMs, config = {}) {
     events.push({
       reminderId,
       taskId: pick.id,
-      title: entry.title,
+      // The popup gets the untruncated title; the ledger keeps the clipped one.
+      title: fullTitles.get(pick.id) ?? entry.title,
       dueMs: entry.dueMs,
       repeat: entry.repeat,
       ttlMs: cfg.ttlMs,
@@ -268,7 +276,33 @@ function planScan(state, tasks, nowMs, config = {}) {
   }
 
   pruneLedger(next, cfg);
+  fitStateBudget(next, cfg);
   return { events, state: next, nextCheckMs: computeNextCheck(next, nowMs, cfg) };
+}
+
+function clipTitle(title, max) {
+  return title.length > max ? `${title.slice(0, Math.max(1, max - 1))}…` : title;
+}
+
+const utf8Encoder = new TextEncoder();
+function stateBytes(state) {
+  return utf8Encoder.encode(JSON.stringify(state)).length;
+}
+
+/**
+ * Hard cap on the persisted state (OpenClaw rejects >16 KB). Entries are
+ * dropped lowest-rank first — the freshest due/notified ones survive, so a
+ * huge task list degrades to "remind about what matters" instead of failing
+ * the whole run.
+ */
+function fitStateBudget(state, cfg) {
+  const rank = ledgerRank;
+  while (stateBytes(state) > cfg.stateBudgetBytes) {
+    const ids = Object.keys(state.tasks);
+    if (!ids.length) break;
+    ids.sort((a, b) => rank(state.tasks[a]) - rank(state.tasks[b]));
+    delete state.tasks[ids[0]];
+  }
 }
 
 /** Minutes since local midnight for `nowMs` in IANA zone `tz`. */
@@ -326,12 +360,16 @@ function computeNextCheck(state, nowMs, config = {}) {
   return soonest;
 }
 
+/** Ledger eviction rank: lower = droppable first (stale, then old notified, then due). */
+function ledgerRank(e) {
+  return (e.status === "stale" ? 0 : e.status === "notified" ? 1 : 2) * 1e13
+    + (e.lastNotifiedAt || e.dueMs || 0);
+}
+
 function pruneLedger(state, cfg) {
   const ids = Object.keys(state.tasks);
   if (ids.length <= cfg.maxEntries) return;
-  const rank = (e) =>
-    (e.status === "stale" ? 0 : e.status === "notified" ? 1 : 2) * 1e13
-    + (e.lastNotifiedAt || e.dueMs || 0);
+  const rank = ledgerRank;
   const droppable = ids.sort((a, b) => rank(state.tasks[a]) - rank(state.tasks[b]));
   for (const id of droppable.slice(0, ids.length - cfg.maxEntries)) delete state.tasks[id];
 }
