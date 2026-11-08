@@ -87,10 +87,25 @@ openclaw automations list --all                    # job exists, enabled
 openclaw automations runs nano-reminder-scan       # recent runs ok, no errors
 ```
 End-to-end: create a TickTick task due one minute out (inside active hours) ->
-within ~`pacing-min` the glasses show the popup -> tap the temple -> say
-"сделано" -> the task completes in TickTick. Then: "через 10 минут" -> the due
-date moves ~10 minutes; "не сейчас" -> +30 minutes; silence -> re-nag after
-5m, 15m, 60m, 4h, then quiet until the task changes.
+within ~`pacing-min` the glasses show the popup (worded by Nano himself, from
+the task title) -> tap the temple -> say "сделано" -> the task completes in
+TickTick. Then: "через 10 минут" -> the due date moves ~10 minutes; "не сейчас"
+-> +30 minutes; silence -> re-nag after a fixed 5 minutes, up to `maxRepeats`
+times, then quiet until the task changes. Two or more tasks due together fire
+one grouped popup whose spoken answer is free text Nano maps onto the tasks.
+
+## Popup policy (v2)
+
+- One due task -> classic single popup; the phone classifies the voice answer
+  (done / snooze / postpone) and re-asks once on an unrecognized one.
+- Two or more due together -> one grouped popup (`free_text:true`), answer is
+  a sentence for Nano to interpret against the listed task ids.
+- Retry after any unanswered popup: fixed 5 minutes (single and group alike);
+  after `maxRepeats` (5) unanswered shows the entries go stale until the task
+  itself changes.
+- The event (`REMINDER_EVENT v2`) fixes the procedure but explicitly lets
+  Nano author the popup wording and continue the conversation in chat after
+  the popup (see `openclaw/AGENTS.reminder.md`).
 
 ## Tuning
 
@@ -108,7 +123,8 @@ reminder cycle re-notifies.
   between scans is detected on the next tick, so its worst-case lateness is
   the base `--every` period (lower it to 2m if that matters; a scan is ~5 MCP
   calls and a few seconds, no model turn unless a reminder fires).
-- One popup per scan tick; many simultaneous deadlines serialize ~1/minute.
+- One popup per scan tick; simultaneous deadlines group into one popup (first
+  `maxGroupItems` listed, the rest counted), so a pile-up costs one LLM turn.
 - The blocking `glasses.reminder_show` call needs the MCP client's tool timeout
   to cover `ttl_ms + ~35s` (the phone tool declares this; OpenClaw's default
   tool timeout may need raising for this tool).

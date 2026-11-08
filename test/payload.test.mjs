@@ -75,7 +75,7 @@ test("a due task makes the payload notify with the courier contract", async () =
   };
   const result = await run(mcp, { state: null, quiet: OPEN });
   assert.equal(result.wake, "now");
-  assert.match(result.notify, /REMINDER_EVENT v1/);
+  assert.match(result.notify, /REMINDER_EVENT v2/);
   assert.match(result.notify, /glasses\.reminder_show/);
   assert.match(result.notify, /"task_id":"t9"/);
   assert.equal(result.state.tasks.t9.status, "notified");

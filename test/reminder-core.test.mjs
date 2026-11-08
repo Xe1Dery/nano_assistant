@@ -24,8 +24,9 @@ test("first scan: due task fires exactly one event and enters the ledger as noti
   const plan = planScan(null, tasks, T0);
   assert.equal(plan.events.length, 1);
   const ev = plan.events[0];
-  assert.equal(ev.taskId, "a");
-  assert.equal(ev.title, "Позвонить клиенту");
+  assert.equal(ev.kind, "single");
+  assert.equal(ev.tasks[0].taskId, "a");
+  assert.equal(ev.tasks[0].title, "Позвонить клиенту");
   assert.equal(ev.repeat, 1);
   assert.match(ev.reminderId, /^r-a-/);
   assert.equal(plan.state.tasks.a.status, "notified");
@@ -48,7 +49,7 @@ test("nextCheck clamps to the configured maximum", () => {
   assert.equal(nextCheckDuration(plan.nextCheckMs, T0, { maxNextCheck: "30m" }), "30m");
 });
 
-test("re-notification follows the backoff ladder", () => {
+test("re-notification retries at a fixed 5 minutes", () => {
   const due = T0 - min(1);
   const tasks = [task("a", "x", due)];
   let plan = planScan(null, tasks, T0); // fires #1 at T0
@@ -56,13 +57,13 @@ test("re-notification follows the backoff ladder", () => {
   let next = planScan(plan.state, tasks, T0 + min(2));
   assert.equal(next.events.length, 0);
   assert.equal(next.state.tasks.a.status, "notified");
-  // After the first backoff step: fires #2.
+  // After the fixed 5-minute wait: fires #2.
   next = planScan(plan.state, tasks, T0 + min(6));
   assert.equal(next.events.length, 1);
   assert.equal(next.state.tasks.a.repeat, 2);
-  // Second step is 15 minutes: quiet at +10 from fire #2, fires at +16.
-  assert.equal(planScan(next.state, tasks, T0 + min(6) + min(10)).events.length, 0);
-  assert.equal(planScan(next.state, tasks, T0 + min(6) + min(16)).events.length, 1);
+  // The wait never grows: quiet at +4 from fire #2, fires at +6.
+  assert.equal(planScan(next.state, tasks, T0 + min(6) + min(4)).events.length, 0);
+  assert.equal(planScan(next.state, tasks, T0 + min(6) + min(6)).events.length, 1);
 });
 
 test("too many repeats goes stale and stays quiet until the task changes", () => {
@@ -103,7 +104,7 @@ test("a changed due date resets the cycle; a closed task leaves the ledger", () 
   assert.equal(closed.events.length, 0);
 });
 
-test("one popup per tick, most overdue first; the rest wait", () => {
+test("two due tasks fire one grouped popup; a lone one fires single", () => {
   const tasks = [
     task("b", "later", T0 - min(5)),
     task("c", "sooner", T0 - min(30)),
@@ -111,9 +112,47 @@ test("one popup per tick, most overdue first; the rest wait", () => {
   ];
   const plan = planScan(null, tasks, T0);
   assert.equal(plan.events.length, 1);
-  assert.equal(plan.events[0].taskId, "c");
-  assert.equal(plan.state.tasks.b.status, "due");
+  const ev = plan.events[0];
+  assert.equal(ev.kind, "group");
+  assert.deepEqual(ev.tasks.map((t) => t.taskId), ["c", "b"]); // most overdue first
+  assert.ok(ev.reminderId.startsWith("g-"));
+  // The whole group is marked notified together, with the fixed 5-minute retry.
+  assert.equal(plan.state.tasks.b.status, "notified");
+  assert.equal(plan.state.tasks.c.status, "notified");
+  assert.equal(plan.state.tasks.b.retryAtMs, T0 + DEFAULTS.groupBackoffMs);
+  // The future task waits untouched.
   assert.equal(plan.state.tasks.d.status, "due");
+  // A lone due task keeps the classic single-popup shape.
+  const solo = planScan(null, [task("c", "sooner", T0 - min(30))], T0);
+  assert.equal(solo.events[0].kind, "single");
+  assert.equal(solo.events[0].tasks.length, 1);
+  assert.ok(solo.events[0].reminderId.startsWith("r-"));
+});
+
+test("group retry is fixed 5m and the repeat budget goes stale", () => {
+  const tasks = [task("a", "x", T0 - min(1)), task("b", "y", T0 - min(2))];
+  const first = planScan(null, tasks, T0);
+  assert.equal(first.events[0].kind, "group");
+  // +4 min: still inside the fixed group wait.
+  assert.equal(planScan(first.state, tasks, T0 + min(4)).events.length, 0);
+  // +6 min: the group refires as a whole, same members -> same fingerprint,
+  // new attempt number.
+  const second = planScan(first.state, tasks, T0 + min(6));
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, "group");
+  assert.match(second.events[0].reminderId, /^g-/);
+  assert.notEqual(second.events[0].reminderId, first.events[0].reminderId);
+  // Burn the budget, then the group goes stale until a task changes.
+  let state = second.state;
+  let now = T0 + min(6);
+  for (let i = 2; i < DEFAULTS.maxRepeats; i++) {
+    state = planScan(state, tasks, now + min(6)).state;
+    now += min(6);
+  }
+  const stale = planScan(state, tasks, now + min(6));
+  assert.equal(stale.events.length, 0);
+  assert.equal(stale.state.tasks.a.status, "stale");
+  assert.equal(stale.state.tasks.b.status, "stale");
 });
 
 test("reminderId is deterministic per task+due+attempt", () => {
@@ -138,16 +177,16 @@ test("nextCheckMs tracks the nearest real wake need", () => {
   let plan = planScan(null, [task("f", "future", due)], T0);
   assert.equal(plan.nextCheckMs, due);
 
-  // Two overdue tasks, one popup fires: the queued one pulls the next scan
-  // to the minimum interval, not the 30m default.
+  // Two overdue tasks fire one grouped popup: the group's fixed 5-minute
+  // retry is the next wake.
   plan = planScan(null, [task("a", "x", T0 - min(9)), task("b", "y", T0 - min(2))], T0);
   assert.equal(plan.events.length, 1);
-  assert.equal(plan.nextCheckMs, T0 + min(1));
+  assert.equal(plan.nextCheckMs, T0 + min(5));
 
   // One fired popup, nothing else pending: the backoff ladder sets the wake.
   plan = planScan(null, [task("a", "x", T0 - min(1))], T0);
   assert.equal(plan.events.length, 1);
-  assert.equal(plan.nextCheckMs, T0 + min(5)); // first backoff rung
+  assert.equal(plan.nextCheckMs, T0 + min(5)); // fixed single-popup retry
 
   // A task evicted from the ledger by maxEntries still schedules its wake:
   // eviction drops the earliest-due entries first, so "early" is gone from
@@ -204,19 +243,45 @@ test("a task list past the cap keeps the freshest entries and revives stale on d
   assert.equal(revived.state.tasks.a.repeat, 0);
 });
 
-test("renderEvent carries exact JSON arguments and the courier contract", () => {
+test("renderEvent v2 single: exact args, rephrasing allowed, answer table", () => {
   const text = renderEvent({
-    reminderId: 'r-a-1"2', taskId: 'a\\b', title: 'Позвонить "клиенту"', dueMs: T0, ttlMs: 60_000, repeat: 1,
+    kind: "single",
+    reminderId: 'r-a-1"2',
+    tasks: [{ taskId: 'a\\b', title: 'Позвонить "клиенту"', dueMs: T0 }],
+    ttlMs: 60_000,
+    repeat: 1,
   });
-  assert.match(text, /REMINDER_EVENT v1/);
+  assert.match(text, /REMINDER_EVENT v2/);
   assert.match(text, /glasses\.reminder_show/);
   // The arguments line must be valid JSON even with quotes in the values.
   const line = text.split("\n").find((l) => l.trim().startsWith("{"));
   const args = JSON.parse(line);
   assert.equal(args.reminder_id, 'r-a-1"2');
   assert.equal(args.task_id, 'a\\b');
-  assert.equal(args.text, 'Позвонить "клиенту"');
   assert.equal(args.ttl_ms, 60_000);
+  assert.ok(!("text" in args)); // the courier authors the popup text himself
+  assert.match(text, /Source title: "Позвонить \\"клиенту\\""/);
+  assert.match(text, /own voice/);
+  assert.match(text, /action "done"/);
+});
+
+test("renderEvent v2 group: free_text flag, numbered list, id order", () => {
+  const items = [
+    { taskId: "t1", title: "Позвонить клиенту", dueMs: T0 - min(30) },
+    { taskId: "t2", title: "Купить молоко", dueMs: T0 - min(5) },
+  ];
+  const text = renderEvent({ kind: "group", reminderId: "g-abc-1", tasks: items, ttlMs: 60_000, repeat: 1 });
+  const line = text.split("\n").find((l) => l.trim().startsWith("{"));
+  const args = JSON.parse(line);
+  assert.equal(args.free_text, true);
+  assert.match(text, /1\. Позвонить клиенту/);
+  assert.match(text, /2\. Купить молоко/);
+  assert.match(text, /t1, t2/);
+  assert.match(text, /free-spoken answer/);
+  // Long groups list the first items and count the rest.
+  const many = Array.from({ length: 8 }, (_, i) => ({ taskId: `t${i}`, title: `x${i}`, dueMs: T0 }));
+  const big = renderEvent({ kind: "group", reminderId: "g-x-1", tasks: many, ttlMs: 60_000, repeat: 1 });
+  assert.match(big, /\(\+3 more due, not listed\)/);
 });
 
 test("computeNextCheck ignores stale and null-due entries", () => {
@@ -326,7 +391,7 @@ test("planScan keeps persisted state under the byte budget", () => {
   const nowTask = { id: "hot", title: "Полный заголовок без обрезки".repeat(5), dueMs: T0 - 1000, closed: false };
   const hot = planScan(null, [nowTask], T0);
   assert.equal(hot.events.length, 1);
-  assert.equal(hot.events[0].title, nowTask.title);
+  assert.equal(hot.events[0].tasks[0].title, nowTask.title);
 });
 
 test("activeWindow gates by local wall clock and computes the next opening", () => {

@@ -15,15 +15,24 @@
  *   stale     — repeated too many times with no answer; quiet until the task
  *               itself changes (a new due date resets it to due)
  * A closed or vanished task simply loses its ledger entry.
+ *
+ * Popup policy (variant 2): one due task fires a classic single popup whose
+ * voice answer is classified on the phone; two or more fire one grouped popup
+ * whose answer is free text for the agent to interpret. Grouped candidates
+ * share one fixed 5-minute retry ladder and one repeat budget.
  */
 
 const DEFAULTS = {
   /** Fire this many ms before the due date (0 = at the deadline). */
   leadMs: 0,
-  /** Re-nag ladder after the first notification, in ms. */
-  backoff: [5 * 60_000, 15 * 60_000, 60 * 60_000, 4 * 3600_000],
+  /** Re-nag ladder after the first notification, in ms (single popups). */
+  backoff: [5 * 60_000],
+  /** Grouped popups always retry after this fixed delay, in ms. */
+  groupBackoffMs: 5 * 60_000,
   /** After this many notifications without an answer, go stale. */
   maxRepeats: 5,
+  /** Max task lines listed on one grouped popup; the rest are counted as "+N". */
+  maxGroupItems: 5,
   /** Popup lifetime handed to glasses.reminder_show. */
   ttlMs: 60_000,
   /** nextCheck bounds, as durations the OpenClaw scheduler understands. */
@@ -247,8 +256,7 @@ function planScan(state, tasks, nowMs, config = {}) {
     if (fire && entry.status === "due" && nowMs >= fireAt) {
       candidates.push({ task: entry, id: task.id });
     } else if (entry.status === "notified") {
-      const wait = cfg.backoff[Math.min(entry.repeat - 1, cfg.backoff.length - 1)];
-      const retryAt = entry.lastNotifiedAt + wait;
+      const retryAt = entry.retryAtMs ?? entry.lastNotifiedAt + retryWait(entry, cfg);
       if (entry.repeat >= cfg.maxRepeats) {
         entry.status = "stale"; // nagged enough; wait for a task change
       } else if (nowMs >= retryAt) {
@@ -258,45 +266,57 @@ function planScan(state, tasks, nowMs, config = {}) {
     }
   }
 
-  // One popup per tick, the most overdue first; the rest wait for the next scan.
+  // One popup per tick. Variant 2: a lone candidate fires a classic single
+  // popup (the phone classifies its voice answer); two or more fire one
+  // grouped popup whose answer is free text for the agent to interpret.
+  // All grouped candidates are marked notified together and share the fixed
+  // 5-minute group retry; each carries its own repeat counter, so the repeat
+  // budget is effectively per group.
   if (candidates.length) {
     candidates.sort((a, b) => a.task.dueMs - b.task.dueMs);
-    const pick = candidates[0];
-    const entry = next.tasks[pick.id];
-    entry.status = "notified";
-    entry.repeat += 1;
-    entry.lastNotifiedAt = nowMs;
-    // Deterministic id: same task+due+attempt => same id, so a retried
-    // delivery reuses the phone's open popup instead of stacking a second.
-    const reminderId = `r-${pick.id}-${entry.dueMs}-${entry.repeat}`;
-    events.push({
-      reminderId,
-      taskId: pick.id,
+    const group = candidates.length >= 2;
+    const repeats = [];
+    for (const c of candidates) {
+      const entry = next.tasks[c.id];
+      entry.status = "notified";
+      entry.repeat += 1;
+      entry.lastNotifiedAt = nowMs;
+      entry.retryAtMs = group ? nowMs + cfg.groupBackoffMs : nowMs + retryWait(entry, cfg);
+      repeats.push(entry.repeat);
+    }
+    const repeat = Math.max(...repeats);
+    const items = candidates.map((c) => ({
+      taskId: c.id,
       // The popup gets the untruncated title; the ledger keeps the clipped one.
-      title: fullTitles.get(pick.id) ?? entry.title,
-      dueMs: entry.dueMs,
-      repeat: entry.repeat,
+      title: fullTitles.get(c.id) ?? c.task.title,
+      dueMs: c.task.dueMs,
+    }));
+    // Deterministic ids: the same members and dues at the same attempt yield
+    // the same id, so a retried delivery reuses the phone's open popup
+    // instead of stacking a second one.
+    const reminderId = group
+      ? `g-${groupFingerprint(candidates)}-${repeat}`
+      : `r-${candidates[0].id}-${candidates[0].task.dueMs}-${repeat}`;
+    events.push({
+      kind: group ? "group" : "single",
+      reminderId,
+      tasks: items,
+      repeat,
       ttlMs: cfg.ttlMs,
     });
   }
 
   pruneLedger(next, cfg);
   fitStateBudget(next, cfg);
-  // Candidates left in the queue (one popup per tick, most overdue first) or
-  // a fired popup whose repeats ride the backoff ladder must pull the next
-  // scan in early; task deadlines the ledger could not hold still count too.
-  const queueWake = candidates.length > (events.length ? 1 : 0)
-    ? nowMs + parseDurationMs(cfg.minNextCheck, 60_000)
-    : null;
+  // Wake planning: the ledger's own retry times (single ladder or the fixed
+  // group wait), plus every scanned deadline — including tasks the ledger
+  // cap evicted, whose due time must still pull the next scan in.
   return {
     events,
     state: next,
     nextCheckMs: mergeWake(
-      mergeWake(
-        computeNextCheck(next, nowMs, cfg),
-        soonestWake(wakeTimes, nowMs),
-      ),
-      queueWake,
+      computeNextCheck(next, nowMs, cfg),
+      soonestWake(wakeTimes, nowMs),
     ),
   };
 }
@@ -395,12 +415,27 @@ function computeNextCheck(state, nowMs, config = {}) {
     let when = null;
     if (entry.status === "due" && entry.dueMs) when = entry.dueMs - cfg.leadMs;
     else if (entry.status === "notified") {
-      const wait = cfg.backoff[Math.min(entry.repeat - 1, cfg.backoff.length - 1)];
-      when = entry.lastNotifiedAt + wait;
+      when = entry.retryAtMs ?? entry.lastNotifiedAt + retryWait(entry, cfg);
     }
     if (when !== null && when > nowMs && (soonest === null || when < soonest)) soonest = when;
   }
   return soonest;
+}
+
+/** Single-popup retry delay for the attempt that was just made. */
+function retryWait(entry, cfg) {
+  return cfg.backoff[Math.min(entry.repeat - 1, cfg.backoff.length - 1)];
+}
+
+/** Stable short hash of the group members (ids+dues), for group reminder ids. */
+function groupFingerprint(candidates) {
+  const key = candidates
+    .map((c) => `${c.id}:${c.task.dueMs}`)
+    .sort()
+    .join("|");
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }
 
 /** Ledger eviction rank: lower = droppable first (stale, then old notified, then due). */
@@ -418,25 +453,49 @@ function pruneLedger(state, cfg) {
 }
 
 /**
- * Render the system-event text for one event. This is a machine instruction
- * for the agent-courier: exact tool, exact arguments, and the fixed table of
- * what to do with the answer. The agent must not improvise any of it.
+ * Render the system-event text for one event (v2). The skeleton is a machine
+ * contract — tool name, ids, ttl, and the answer table are fixed. The one
+ * thing the courier authors himself is the popup wording: the task titles
+ * below are source material, and he renders them in his own voice (the
+ * wearer asked for that) while keeping every task and its meaning intact.
  */
-function renderEvent(event) {
-  const due = new Date(event.dueMs).toISOString();
-  return [
-    "REMINDER_EVENT v1 (deterministic; you are a courier, do not improvise)",
-    `Call the Faceclaw tool glasses.reminder_show with EXACTLY these arguments:`,
-    `{"reminder_id":${JSON.stringify(event.reminderId)},"task_id":${JSON.stringify(event.taskId)},"text":${JSON.stringify(event.title)},"ttl_ms":${event.ttlMs}}`,
-    "Then process the JSON result it returns:",
-    `- action "done": mark the task completed in TickTick (complete_task).`,
-    `- action "snooze" with minutes > 0: update the task's due date to now + minutes (update_task).`,
-    `- action "snooze" with minutes 0 (the wearer said "not now"): update the due date to now + 30 minutes.`,
-    `- action "postpone": update the due date to tomorrow 09:00 local time.`,
-    `- action "other": the wearer's words are in "text"; act on them sensibly (reschedule, complete, or just acknowledge).`,
-    `- action "dismissed" / "expired" / "cancelled": do nothing; the controller will re-notify with backoff.`,
-    `Task due at ${due}. Do not rephrase the reminder text. Do not call any other glasses tool.`,
-  ].join("\n");
+function renderEvent(event, config = {}) {
+  const cfg = { ...DEFAULTS, ...config };
+  const items = event.tasks ?? [];
+  const single = event.kind !== "group";
+  const out = [];
+  out.push("REMINDER_EVENT v2 (courier script; the wording is yours, the procedure is not)");
+  if (single) {
+    out.push(
+      `Call glasses.reminder_show with exactly these arguments (write "text" yourself, see rules):`,
+      `{"reminder_id":${JSON.stringify(event.reminderId)},"task_id":${JSON.stringify(items[0].taskId)},"ttl_ms":${event.ttlMs}}`,
+      `Source title: ${JSON.stringify(items[0].title)}; due ${new Date(items[0].dueMs).toISOString()}.`,
+      `"text": rephrase the source title in your own voice (max 90 chars). Keep the task recognizable; never change, drop, or invent details.`,
+      "Then process the JSON result:",
+      `- action "done": complete the task in TickTick (complete_task).`,
+      `- action "snooze" with minutes > 0: move the due date to now + minutes (update_task).`,
+      `- action "snooze" with minutes 0 ("not now"): move the due date to now + 30 minutes.`,
+      `- action "postpone": move the due date to tomorrow 09:00 local.`,
+      `- action "other": the wearer's words are in "text"; act on them sensibly, TickTick is the source of truth.`,
+      `- action "dismissed" / "expired" / "cancelled": do nothing; the controller re-notifies with backoff.`,
+    );
+  } else {
+    const listed = items.slice(0, cfg.maxGroupItems);
+    const extra = items.length - listed.length;
+    out.push(
+      `${items.length} tasks are due together. Call glasses.reminder_show with exactly these arguments (you compose "text", see rules):`,
+      `{"reminder_id":${JSON.stringify(event.reminderId)},"free_text":true,"ttl_ms":${event.ttlMs}}`,
+      `"text": one short intro line in your own voice + a numbered list of these tasks (keep each recognizable, max ~60 chars per line):`,
+      ...listed.map((t, i) => `  ${i + 1}. ${t.title} (due ${new Date(t.dueMs).toISOString()})`),
+      ...(extra > 0 ? [`  (+${extra} more due, not listed)`] : []),
+      "The popup collects a free-spoken answer (no command classification on glasses). Then process the JSON result:",
+      `- action "other" with the wearer's words in "text": map them onto the listed tasks and act in TickTick (complete_task / update_task). If the answer is ambiguous, ask one clarifying question in chat, never on the glasses.`,
+      `- action "dismissed" / "expired" / "cancelled": do nothing; the controller re-notifies the group in ${Math.round(cfg.groupBackoffMs / 60_000)} minutes.`,
+      "Task ids, in list order: " + items.map((t) => t.taskId).join(", ") + ".",
+    );
+  }
+  out.push("Do not call any other glasses tool in this turn.");
+  return out.join("\n");
 }
 
 /** nextCheckMs -> the nearest scheduler duration string within bounds. */
