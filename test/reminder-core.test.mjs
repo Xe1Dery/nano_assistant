@@ -33,18 +33,19 @@ test("first scan: due task fires exactly one event and enters the ledger as noti
 });
 
 test("future deadline does not fire; nextCheck points at it", () => {
-  const due = T0 + min(7);
+  const due = T0 + min(4);
   const plan = planScan(null, [task("a", "x", due)], T0);
   assert.equal(plan.events.length, 0);
   assert.equal(plan.state.tasks.a.status, "due");
   assert.equal(plan.nextCheckMs, due);
-  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "7m");
+  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "4m");
 });
 
 test("nextCheck clamps to the configured maximum", () => {
   const due = T0 + min(120);
   const plan = planScan(null, [task("a", "x", due)], T0);
-  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "30m");
+  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "5m");
+  assert.equal(nextCheckDuration(plan.nextCheckMs, T0, { maxNextCheck: "30m" }), "30m");
 });
 
 test("re-notification follows the backoff ladder", () => {
@@ -129,6 +130,33 @@ test("tasks without a due date are tracked but never fire", () => {
   assert.equal(plan.events.length, 0);
   assert.equal(plan.state.tasks.a.status, "due");
   assert.equal(plan.nextCheckMs, null);
+});
+
+test("nextCheckMs tracks the nearest real wake need", () => {
+  // Future deadline, nothing due now: wake exactly at the due time.
+  const due = T0 + min(4);
+  let plan = planScan(null, [task("f", "future", due)], T0);
+  assert.equal(plan.nextCheckMs, due);
+
+  // Two overdue tasks, one popup fires: the queued one pulls the next scan
+  // to the minimum interval, not the 30m default.
+  plan = planScan(null, [task("a", "x", T0 - min(9)), task("b", "y", T0 - min(2))], T0);
+  assert.equal(plan.events.length, 1);
+  assert.equal(plan.nextCheckMs, T0 + min(1));
+
+  // One fired popup, nothing else pending: the backoff ladder sets the wake.
+  plan = planScan(null, [task("a", "x", T0 - min(1))], T0);
+  assert.equal(plan.events.length, 1);
+  assert.equal(plan.nextCheckMs, T0 + min(5)); // first backoff rung
+
+  // A task evicted from the ledger by maxEntries still schedules its wake:
+  // eviction drops the earliest-due entries first, so "early" is gone from
+  // the ledger but its deadline must still pull the scan to T0+2m.
+  const many = [task("early", "soon", T0 + min(2))];
+  for (let i = 0; i < 70; i++) many.push(task(`p${i}`, `later ${i}`, T0 + min(10 + i)));
+  plan = planScan(null, many, T0);
+  assert.ok(!("early" in plan.state.tasks), "earliest due should be pruned by the cap");
+  assert.equal(plan.nextCheckMs, T0 + min(2));
 });
 
 test("normalizeTasks survives the field-name variants and marks closed", () => {

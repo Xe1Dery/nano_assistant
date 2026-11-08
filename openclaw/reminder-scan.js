@@ -28,7 +28,7 @@ const DEFAULTS = {
   ttlMs: 60_000,
   /** nextCheck bounds, as durations the OpenClaw scheduler understands. */
   minNextCheck: "1m",
-  maxNextCheck: "30m",
+  maxNextCheck: "5m",
   /** Ledger cap; oldest stale/notified entries are pruned past it. */
   maxEntries: 60,
   /** Hard budget for the persisted state (OpenClaw caps it at 16 KB). */
@@ -218,12 +218,17 @@ function planScan(state, tasks, nowMs, config = {}) {
   const events = [];
   const candidates = [];
   const fullTitles = new Map();
+  // Wake times for every tracked deadline, independent of ledger eviction:
+  // a task dropped from the ledger by the cap/budget must still pull the next
+  // scan toward its due time, or the popup would arrive late.
+  const wakeTimes = [];
 
   for (const task of tasks) {
     const old = prev[task.id];
     let entry;
     if (task.closed) continue; // closed elsewhere: ledger entry simply gone
     fullTitles.set(task.id, task.title);
+    if (task.dueMs) wakeTimes.push(task.dueMs - cfg.leadMs);
     if (!task.dueMs) {
       // Deadline removed: keep tracking quietly, no reminder without a date.
       entry = { title: clipTitle(task.title, cfg.maxTitleChars), dueMs: null, status: "due", repeat: 0, lastNotifiedAt: 0 };
@@ -277,7 +282,45 @@ function planScan(state, tasks, nowMs, config = {}) {
 
   pruneLedger(next, cfg);
   fitStateBudget(next, cfg);
-  return { events, state: next, nextCheckMs: computeNextCheck(next, nowMs, cfg) };
+  // Candidates left in the queue (one popup per tick, most overdue first) or
+  // a fired popup whose repeats ride the backoff ladder must pull the next
+  // scan in early; task deadlines the ledger could not hold still count too.
+  const queueWake = candidates.length > (events.length ? 1 : 0)
+    ? nowMs + parseDurationMs(cfg.minNextCheck, 60_000)
+    : null;
+  return {
+    events,
+    state: next,
+    nextCheckMs: mergeWake(
+      mergeWake(
+        computeNextCheck(next, nowMs, cfg),
+        soonestWake(wakeTimes, nowMs),
+      ),
+      queueWake,
+    ),
+  };
+}
+
+/** "15m" / "4h" -> ms; anything unparseable falls back to the default. */
+function parseDurationMs(value, fallbackMs) {
+  const m = /^(\d+)([mh])$/.exec(String(value ?? ""));
+  if (!m) return fallbackMs;
+  return Number(m[1]) * (m[2] === "h" ? 3_600_000 : 60_000);
+}
+
+/** The earliest wake time strictly after now, or null. */
+function soonestWake(times, nowMs) {
+  let soonest = null;
+  for (const t of times) {
+    if (t > nowMs && (soonest === null || t < soonest)) soonest = t;
+  }
+  return soonest;
+}
+
+function mergeWake(a, b) {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.min(a, b);
 }
 
 function clipTitle(title, max) {
