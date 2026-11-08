@@ -4,6 +4,7 @@ import {
   DEFAULTS,
   normalizeTasks,
   normalizeProjects,
+  parseToolPayload,
   planScan,
   computeNextCheck,
   renderEvent,
@@ -193,4 +194,49 @@ test("computeNextCheck ignores stale and null-due entries", () => {
     },
   };
   assert.equal(computeNextCheck(state, T0), T0 + min(3));
+});
+
+test("parseToolPayload handles the real server's JSONL text", () => {
+  // Exactly the shape probe-tools printed for list_projects: one JSON per line.
+  const jsonl = [
+    JSON.stringify({ id: "6996", name: "GTD", kind: "TASK" }),
+    JSON.stringify({ id: "69e7", name: "Тренировки", kind: "NOTE" }),
+  ].join("\n");
+  assert.deepEqual(parseToolPayload(jsonl), [
+    { id: "6996", name: "GTD", kind: "TASK" },
+    { id: "69e7", name: "Тренировки", kind: "NOTE" },
+  ]);
+  // Pretty-printed whole-document JSON parses as one object, not per line.
+  const pretty = JSON.stringify({ id: "x", name: "y" }, null, 2);
+  assert.deepEqual(parseToolPayload(pretty), { id: "x", name: "y" });
+  // MCP content envelope unwraps to the text payload.
+  assert.deepEqual(
+    parseToolPayload({ content: [{ type: "text", text: jsonl }], isError: false }),
+    [
+      { id: "6996", name: "GTD", kind: "TASK" },
+      { id: "69e7", name: "Тренировки", kind: "NOTE" },
+    ],
+  );
+  // structuredContent fallback, plain objects pass through, junk is null.
+  assert.deepEqual(parseToolPayload({ structuredContent: { tasks: [] } }), { tasks: [] });
+  assert.deepEqual(parseToolPayload({ a: 1 }), { a: 1 });
+  assert.equal(parseToolPayload("not json at all"), null);
+});
+
+test("normalizeTasks reads tasks out of the project-detail JSONL wrapper", () => {
+  const raw = JSON.stringify({
+    id: "p1", name: "Inbox", kind: "TASK",
+    tasks: [{ id: "t1", title: "x", dueDate: "2026-11-09T12:00:00.000+0000", status: 0 }],
+  });
+  const rows = normalizeTasks(raw);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "t1");
+  // A project row without tasks (or a NOTE list) yields nothing.
+  assert.deepEqual(normalizeTasks(JSON.stringify({ id: "p2", name: "Notes", kind: "NOTE" })), []);
+  // JSONL of several project-detail objects concatenates their tasks.
+  const many = [
+    JSON.stringify({ id: "a", tasks: [{ id: "t1", title: "x", dueDate: "2026-11-09T12:00:00Z" }] }),
+    JSON.stringify({ id: "b", tasks: [{ id: "t2", title: "y", dueDate: "2026-11-09T13:00:00Z" }] }),
+  ].join("\n");
+  assert.deepEqual(normalizeTasks(many).map((r) => r.id), ["t1", "t2"]);
 });

@@ -21,11 +21,18 @@ function fakeMcp(calls) {
     ticktick: {
       async list_projects() {
         calls.push("list_projects");
-        return { projects: [{ id: "p1", name: "Inbox", kind: "TASK" }, { id: "p2", name: "Notes", kind: "NOTE" }] };
+        // The real server answers with newline-delimited JSON objects.
+        return [
+          { id: "p1", name: "Inbox", kind: "TASK" },
+          { id: "p2", name: "Notes", kind: "NOTE" },
+        ].map((p) => JSON.stringify(p)).join("\n");
       },
-      async get_project_tasks(args) {
-        calls.push(`get_project_tasks:${args.project_id}`);
-        return { tasks: [{ id: "t1", title: "Позвонить клиенту", dueDate: due, status: 0 }] };
+      async get_project_with_undone_tasks(args) {
+        calls.push(`get_project_with_undone_tasks:${args.project_id}`);
+        return JSON.stringify({
+          id: args.project_id, name: "Inbox", kind: "TASK",
+          tasks: [{ id: "t1", title: "Позвонить клиенту", dueDate: due, status: 0 }],
+        });
       },
     },
   };
@@ -34,7 +41,7 @@ function fakeMcp(calls) {
 test("generated payload runs one scan and returns the contract object", async () => {
   const calls = [];
   const result = await run(fakeMcp(calls), { state: null });
-  assert.deepEqual(calls, ["list_projects", "get_project_tasks:p1"]); // NOTE list skipped
+  assert.deepEqual(calls, ["list_projects", "get_project_with_undone_tasks:p1"]); // NOTE list skipped
   assert.equal(typeof result.nextCheck, "string");
   assert.match(result.nextCheck, /^\d+m$/);
   assert.equal(result.state.tasks.t1.status, "due");
@@ -45,8 +52,10 @@ test("a due task makes the payload notify with the courier contract", async () =
   const past = new Date(Date.now() - 60_000).toISOString();
   const mcp = {
     ticktick: {
-      async list_projects() { return [{ id: "p1", name: "Inbox", kind: "TASK" }]; },
-      async get_project_tasks() { return { tasks: [{ id: "t9", title: "Купить хлеб", dueDate: past, status: 0 }] }; },
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        return JSON.stringify({ id: "p1", tasks: [{ id: "t9", title: "Купить хлеб", dueDate: past, status: 0 }] });
+      },
     },
   };
   const result = await run(mcp, { state: null });

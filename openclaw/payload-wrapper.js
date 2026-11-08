@@ -11,10 +11,12 @@
  *   { state, nextCheck }                      — quiet tick
  * ------------------------------------------------------------------ */
 
-// Filled in by bin/build-payload.mjs; probe-tools.mjs prints the right values.
+// Tool names verified against mcp.ticktick.com (probe-tools.mjs, 2026-11-08).
+// get_project_with_undone_tasks returns the project plus its open tasks in
+// one call; closed tasks are absent, which the ledger treats as "leave".
 const TOOL_NAMES = {
   listProjects: "list_projects",
-  tasksOfProject: "get_project_tasks",
+  tasksOfProject: "get_project_with_undone_tasks",
 };
 
 const SCAN_CONFIG = {
@@ -50,7 +52,9 @@ async function main() {
   const nowMs = Date.now();
   const projectsRaw = await mcpCall(TOOL_NAMES.listProjects, {});
   const skip = SCAN_CONFIG.skipKinds.map((k) => String(k).toUpperCase());
-  let projects = normalizeProjects(projectsRaw).filter((p) => !skip.includes(String(p.kind).toUpperCase()));
+  let projects = normalizeProjects(projectsRaw)
+    .filter((p) => p.closed !== true)
+    .filter((p) => !skip.includes(String(p.kind).toUpperCase()));
   if (SCAN_CONFIG.projects.length) {
     const wanted = new Set(SCAN_CONFIG.projects);
     projects = projects.filter((p) => wanted.has(p.name));

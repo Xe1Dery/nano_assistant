@@ -32,16 +32,79 @@ export const DEFAULTS = {
 };
 
 /**
+ * Parse an MCP tool payload. The official TickTick server returns either a
+ * structured object/array or plain text holding newline-delimited JSON
+ * objects (one record per line, verified against mcp.ticktick.com), and the
+ * MCP envelope may wrap either. Every shape seen so far funnels through here.
+ */
+export function parseToolPayload(value) {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    // Whole-string JSON first: pretty-printed multi-line JSON must survive.
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        /* fall through to line-wise parsing */
+      }
+    }
+    const rows = [];
+    for (const part of value.split(/\n+/)) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      try {
+        rows.push(JSON.parse(trimmed));
+      } catch {
+        // Not JSON (a status line, prose); ignore.
+      }
+    }
+    if (!rows.length) return null;
+    return rows.length === 1 ? rows[0] : rows;
+  }
+  if (typeof value !== "object") return null;
+  // MCP result envelope: { content: [{type:"text",text}], structuredContent }
+  if (Array.isArray(value.content) || value.structuredContent !== undefined) {
+    const texts = (value.content ?? [])
+      .filter((c) => c?.type === "text" && typeof c.text === "string")
+      .map((c) => c.text);
+    if (texts.length) return parseToolPayload(texts.join("\n"));
+    return value.structuredContent ?? null;
+  }
+  return value;
+}
+
+/** Unwrap a project-detail payload: tasks may sit under project.tasks or tasks. */
+function taskRows(payload) {
+  const parsed = parseToolPayload(payload);
+  if (Array.isArray(parsed)) return parsed.flatMap((item) => taskRows(item) ?? []);
+  if (parsed && typeof parsed === "object") {
+    if (Array.isArray(parsed.tasks)) return parsed.tasks;
+    if (parsed.project && Array.isArray(parsed.project.tasks)) return parsed.project.tasks;
+  }
+  return null;
+}
+
+function projectRows(payload) {
+  const parsed = parseToolPayload(payload);
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object") {
+    for (const key of ["projects", "result", "data"]) {
+      if (Array.isArray(parsed[key])) return parsed[key];
+    }
+    // A single project object (one JSONL line, or the whole answer).
+    if (parsed.id !== undefined || parsed.name !== undefined) return [parsed];
+  }
+  return [];
+}
+
+/**
  * Normalize the MCP tool response for one project's tasks into the ledger's
  * shape. Defensive about field names: the official server's payloads have
  * varied across versions, so every plausible spelling is tried.
  */
 export function normalizeTasks(raw) {
-  const list = Array.isArray(raw) ? raw
-    : Array.isArray(raw?.tasks) ? raw.tasks
-    : Array.isArray(raw?.result) ? raw.result
-    : Array.isArray(raw?.data) ? raw.data
-    : [];
+  const list = taskRows(raw) ?? [];
   const out = [];
   for (const t of list) {
     if (!t || typeof t !== "object") continue;
@@ -64,11 +127,7 @@ export function normalizeTasks(raw) {
 
 /** Same for list_projects. */
 export function normalizeProjects(raw) {
-  const list = Array.isArray(raw) ? raw
-    : Array.isArray(raw?.projects) ? raw.projects
-    : Array.isArray(raw?.result) ? raw.result
-    : Array.isArray(raw?.data) ? raw.data
-    : [];
+  const list = projectRows(raw);
   const out = [];
   for (const p of list) {
     if (!p || typeof p !== "object") continue;
