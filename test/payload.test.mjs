@@ -134,3 +134,69 @@ test("quiet hours: no MCP calls, no notify, ledger passed through, wake capped",
   const mins = Number(/^(\d+)m$/.exec(result.nextCheck)[1]);
   assert.ok(mins >= 1 && mins <= 30, `wake ${result.nextCheck} must be 1..30m`);
 });
+
+test("tasks due beyond the week horizon are not scanned and never fire", async () => {
+  const far = new Date(Date.now() + 30 * 86_400_000).toISOString(); // birthday month away
+  const near = new Date(Date.now() - 60_000).toISOString();
+  const mcp = {
+    ticktick: {
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        return JSON.stringify({ id: "p1", tasks: [
+          { id: "bday", title: "День рождения", dueDate: far, status: 0 },
+          { id: "t2", title: "Просрочено", dueDate: near, status: 0 },
+        ] });
+      },
+      async get_task_by_id(args) {
+        return JSON.stringify({ id: args.task_id, title: "Просрочено", dueDate: near, status: 0 });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.ok(result.notify, "the overdue task still fires");
+  assert.match(result.notify, /"task_id":"t2"/);
+  assert.ok(!("bday" in result.state.tasks), "the far-future birthday never enters the ledger");
+  assert.equal(result.state.diag.beyondHorizon, 1);
+});
+
+test("a candidate the task detail reports closed is dropped, not nagged", async () => {
+  const past = new Date(Date.now() - 60_000).toISOString();
+  const mcp = {
+    ticktick: {
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        // The stale-list bug: the project list still answers status 0.
+        return JSON.stringify({ id: "p1", tasks: [{ id: "t3", title: "Тест просрочки", dueDate: past, status: 0 }] });
+      },
+      async get_task_by_id() {
+        // The authoritative read: completed, with a completedTime.
+        return JSON.stringify({ id: "t3", title: "Тест просрочки", dueDate: past, status: 2, completedTime: past });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.equal(result.notify, undefined, "no popup for a task closed elsewhere");
+  assert.ok(!("t3" in result.state.tasks), "the ledger entry is dropped");
+});
+
+test("a group that loses members to the closure check degrades to a single popup", async () => {
+  const past = new Date(Date.now() - 60_000).toISOString();
+  const mcp = {
+    ticktick: {
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        return JSON.stringify({ id: "p1", tasks: [
+          { id: "g1", title: "Живая", dueDate: past, status: 0 },
+          { id: "g2", title: "Закрытая", dueDate: past, status: 0 },
+        ] });
+      },
+      async get_task_by_id(args) {
+        return JSON.stringify({ id: args.task_id, title: args.task_id, dueDate: past, status: args.task_id === "g2" ? 2 : 0 });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.match(result.notify, /"task_id":"g1"/, "single-popup shape");
+  assert.doesNotMatch(result.notify, /free_text/, "no longer the grouped shape");
+  assert.doesNotMatch(result.notify, /g2/);
+});

@@ -36,8 +36,8 @@ export const DEFAULTS = {
   /** nextCheck bounds, as durations the OpenClaw scheduler understands. */
   minNextCheck: "1m",
   maxNextCheck: "5m",
-  /** Ledger cap; oldest stale/notified entries are pruned past it. */
-  maxEntries: 60,
+  /** Ledger cap; oldest entries are pruned past it (see ledgerRank). */
+  maxEntries: 100,
   /** Hard budget for the persisted state (OpenClaw caps it at 16 KB). */
   stateBudgetBytes: 14_000,
   /** Ledger titles are clipped to this length (the popup keeps the full one). */
@@ -445,10 +445,16 @@ function groupFingerprint(candidates) {
   return (h >>> 0).toString(36);
 }
 
-/** Ledger eviction rank: lower = droppable first (stale, then old notified, then due). */
+/**
+ * Ledger eviction rank: lower = droppable first. Plain "due" entries go
+ * first — re-creating one costs nothing — while losing a "notified" entry
+ * resets its repeat budget and losing a "stale" tombstone resurrects the
+ * task and it nags forever (the 2026-11-09 loop bug: a stale tombstone
+ * evicted at the cap made the test task look new every other scan).
+ */
 function ledgerRank(e) {
-  return (e.status === "stale" ? 0 : e.status === "notified" ? 1 : 2) * 1e13
-    + (e.lastNotifiedAt || e.dueMs || 0);
+  const cls = e.status === "due" ? 0 : e.status === "notified" ? 1 : 2;
+  return cls * 1e13 + (e.lastNotifiedAt || e.dueMs || 0);
 }
 
 function pruneLedger(state, cfg) {

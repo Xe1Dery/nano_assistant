@@ -38,8 +38,8 @@ const DEFAULTS = {
   /** nextCheck bounds, as durations the OpenClaw scheduler understands. */
   minNextCheck: "1m",
   maxNextCheck: "5m",
-  /** Ledger cap; oldest stale/notified entries are pruned past it. */
-  maxEntries: 60,
+  /** Ledger cap; oldest entries are pruned past it (see ledgerRank). */
+  maxEntries: 100,
   /** Hard budget for the persisted state (OpenClaw caps it at 16 KB). */
   stateBudgetBytes: 14_000,
   /** Ledger titles are clipped to this length (the popup keeps the full one). */
@@ -447,10 +447,16 @@ function groupFingerprint(candidates) {
   return (h >>> 0).toString(36);
 }
 
-/** Ledger eviction rank: lower = droppable first (stale, then old notified, then due). */
+/**
+ * Ledger eviction rank: lower = droppable first. Plain "due" entries go
+ * first — re-creating one costs nothing — while losing a "notified" entry
+ * resets its repeat budget and losing a "stale" tombstone resurrects the
+ * task and it nags forever (the 2026-11-09 loop bug: a stale tombstone
+ * evicted at the cap made the test task look new every other scan).
+ */
 function ledgerRank(e) {
-  return (e.status === "stale" ? 0 : e.status === "notified" ? 1 : 2) * 1e13
-    + (e.lastNotifiedAt || e.dueMs || 0);
+  const cls = e.status === "due" ? 0 : e.status === "notified" ? 1 : 2;
+  return cls * 1e13 + (e.lastNotifiedAt || e.dueMs || 0);
 }
 
 function pruneLedger(state, cfg) {
@@ -545,6 +551,10 @@ function nextCheckDuration(nextCheckMs, nowMs, config = {}) {
 const TOOL_NAMES = {
   listProjects: "list_projects",
   tasksOfProject: "get_project_with_undone_tasks",
+  // Authoritative single-task read: the project list can answer with a
+  // stale status 0 for a task the wearer already completed (seen
+  // 2026-11-09), so popup candidates are re-checked through this.
+  getTaskById: "get_task_by_id",
   // Account-wide fallback used for the virtual Inbox, whose list_projects id
   // ("inbox") may not resolve in project-scoped tools (real id is per-user,
   // e.g. "inbox128577262").
@@ -556,10 +566,15 @@ const SCAN_CONFIG = {
   projects: [],
   // Skip projects of these kinds (TickTick has "note" lists alongside tasks).
   skipKinds: ["note"],
+  // Only scan tasks due within this horizon (overdue included). The wearer's
+  // list carries annual birthdays far in the future; loading them all just
+  // churns the ledger cap. planScan drops ledger entries absent from the
+  // scan, so a task re-enters with a fresh cycle when it nears the window.
+  dueHorizonDays: 7,
   // Quiet hours, enforced inside the payload so the job needs no
   // --active-hours flags (older CLIs lack them). "system" = the server's own
   // clock; or set an IANA zone like "Europe/Moscow".
-  quiet: { enabled: true, activeStart: "08:00", activeEnd: "22:30", timezone: "system" },
+  quiet: { enabled: true, activeStart: "09:30", activeEnd: "22:30", timezone: "Europe/Moscow" },
 };
 
 /** snake_case -> camelCase: the code-mode runtime renames MCP tools. */
@@ -667,7 +682,41 @@ async function main() {
     }
     tasks.push(...rows);
   }
-  const plan = planScan(trigger?.state ?? null, tasks, nowMs);
+  // Week horizon: keep everything without a date (tracked silently, cheap)
+  // and anything due by the horizon; drop far-future dates (birthdays).
+  const horizonMs = nowMs + SCAN_CONFIG.dueHorizonDays * 86_400_000;
+  const scanned = tasks.filter((t) => t.dueMs === null || t.dueMs <= horizonMs);
+  const plan = planScan(trigger?.state ?? null, scanned, nowMs);
+  // Authoritative closure check before showing anything: drop popup
+  // candidates get_task_by_id reports closed (the project list can keep
+  // answering status 0 for them), and a group that lost members to the
+  // check degrades to a single popup when one is left.
+  if (plan.events.length) {
+    const liveEvents = [];
+    for (const event of plan.events) {
+      const alive = [];
+      for (const item of event.tasks ?? []) {
+        let closed = false;
+        try {
+          const raw = await mcpCallAny(TOOL_NAMES.getTaskById, [
+            { task_id: item.taskId },
+            { taskId: item.taskId },
+          ]);
+          closed = normalizeTasks(raw).some((t) => t.id === String(item.taskId) && t.closed);
+        } catch {
+          // A failed check must not block the reminder: fail open.
+        }
+        if (closed) {
+          delete plan.state.tasks[item.taskId];
+          continue;
+        }
+        alive.push(item);
+      }
+      if (!alive.length) continue;
+      liveEvents.push({ ...event, kind: alive.length === 1 ? "single" : event.kind, tasks: alive });
+    }
+    plan.events = liveEvents;
+  }
   const nowIso = new Date(nowMs).toISOString();
   const result = {
     state: plan.state,
@@ -679,9 +728,11 @@ async function main() {
   result.state.diag = {
     at: nowIso,
     projects: projects.map((p) => p.name),
-    tasks: tasks.length,
-    withDue: tasks.filter((t) => t.dueMs).length,
-    closed: tasks.filter((t) => t.closed).length,
+    tasks: scanned.length,
+    // Dates past the week horizon, hidden from the scan (mostly birthdays).
+    beyondHorizon: tasks.length - scanned.length,
+    withDue: scanned.filter((t) => t.dueMs).length,
+    closed: scanned.filter((t) => t.closed).length,
     events: plan.events.length,
     // Task titles the ledger gave up nagging about (status stale): visible
     // via `automations get` and carried into events for the courier.

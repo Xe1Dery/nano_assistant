@@ -69,11 +69,19 @@ ledger never stores them; it only tracks notification bookkeeping.
      between ticks waits at most the base `--every` period. Do not pass
      `--no-deliver`: rejected for main-session jobs on 2026.11.1 (the main-session
      system event IS the delivery). Quiet
-     hours are enforced **inside the payload** (`SCAN_CONFIG.quiet` in
-     `payload-wrapper.js`, default 08:00–22:30 on the server's clock — edit and
-     rebuild to change), so the job needs no `--active-hours` flags and the
-     behavior does not depend on the CLI version. A task that falls due during
-     quiet hours fires at the first tick after the window opens.
+    hours are enforced **inside the payload** (`SCAN_CONFIG.quiet` in
+    `payload-wrapper.js`, currently 09:30–22:30 `Europe/Moscow` — edit and
+    rebuild to change), so the job needs no `--active-hours` flags and the
+    behavior does not depend on the CLI version. A task that falls due during
+    quiet hours fires at the first tick after the window opens.
+  - Only tasks due within `SCAN_CONFIG.dueHorizonDays` (7, overdue included)
+    are scanned, so far-future annual birthdays do not churn the ledger; the
+    scan summary's `diag.beyondHorizon` counts what was held back.
+  - Every popup candidate is re-checked through `get_task_by_id` before
+    showing: the project list can keep answering status 0 for a task the
+    wearer already completed, and without this check a completed task nags
+    until stale (seen 2026-11-09). A group that loses members to the check
+    degrades to a single popup.
 6. **Standing order.** Append `openclaw/AGENTS.reminder.md` to Nano's AGENTS.md.
 7. **Faceclaw side.** The phone app must expose `glasses.reminder_show`
    (faceclaw repo, >= versionCode 812) with proactive calls enabled

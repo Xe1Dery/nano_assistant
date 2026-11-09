@@ -212,10 +212,11 @@ test("nextCheckMs tracks the nearest real wake need", () => {
   assert.equal(plan.nextCheckMs, T0 + min(5)); // fixed single-popup retry
 
   // A task evicted from the ledger by maxEntries still schedules its wake:
-  // eviction drops the earliest-due entries first, so "early" is gone from
-  // the ledger but its deadline must still pull the scan to T0+2m.
+  // within the due class eviction drops the earliest-due entries first, so
+  // "early" is gone from the ledger but its deadline must still pull the
+  // scan to T0+2m.
   const many = [task("early", "soon", T0 + min(2))];
-  for (let i = 0; i < 70; i++) many.push(task(`p${i}`, `later ${i}`, T0 + min(10 + i)));
+  for (let i = 0; i < DEFAULTS.maxEntries + 10; i++) many.push(task(`p${i}`, `later ${i}`, T0 + min(10 + i)));
   plan = planScan(null, many, T0);
   assert.ok(!("early" in plan.state.tasks), "earliest due should be pruned by the cap");
   assert.equal(plan.nextCheckMs, T0 + min(2));
@@ -436,4 +437,27 @@ test("activeWindow gates by local wall clock and computes the next opening", () 
   // Disabled or malformed config fails open.
   assert.equal(activeWindow(at("2026-11-09T02:00:00Z"), { ...quiet, enabled: false }).active, true);
   assert.equal(activeWindow(at("2026-11-09T02:00:00Z"), { ...quiet, activeStart: "8am" }).active, true);
+});
+
+test("eviction drops plain due entries first and keeps stale tombstones last", () => {
+  // Past the cap: the ledger must keep the stale tombstone (losing it makes
+  // the task resurrect and nag forever) and drop a plain due entry.
+  const state = { version: 1, lastScanAt: T0, tasks: {} };
+  for (let i = 0; i < DEFAULTS.maxEntries; i++) {
+    state.tasks[`d${i}`] = { title: "x", dueMs: T0 + min(i), status: "due", repeat: 0, lastNotifiedAt: 0 };
+  }
+  state.tasks.stale1 = { title: "x", dueMs: T0 - min(1), status: "stale", repeat: 9, lastNotifiedAt: T0 - min(900) };
+  // A retry still ahead of now: the entry stays "notified" into eviction.
+  state.tasks.notif1 = { title: "x", dueMs: T0 - min(1), status: "notified", repeat: 1, lastNotifiedAt: T0 - min(1), retryAtMs: T0 + min(4) };
+  // One future task pushes the ledger over the cap; planScan rebuilds it.
+  const tasks = [];
+  for (let i = 0; i < DEFAULTS.maxEntries; i++) tasks.push(task(`d${i}`, "x", T0 + min(i)));
+  tasks.push(task("stale1", "x", T0 - min(1))); // unchanged due: stays stale
+  tasks.push(task("notif1", "x", T0 - min(1))); // unchanged due: stays notified
+  const plan = planScan(state, tasks, T0, { fire: false });
+  assert.ok(plan.state.tasks.stale1, "the stale tombstone survives eviction");
+  assert.ok(plan.state.tasks.notif1, "the notified entry survives eviction");
+  assert.ok(Object.keys(plan.state.tasks).length <= DEFAULTS.maxEntries);
+  const dropped = tasks.filter((t) => !plan.state.tasks[t.id]);
+  assert.ok(dropped.length >= 1 && dropped.every((t) => /^d\d+$/.test(t.id)), "only plain due entries were dropped");
 });
