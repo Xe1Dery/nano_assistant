@@ -43,9 +43,10 @@ tasks without the wearer's word.
 
 ## Proactive dialog protocol (glasses.dialog_open, Faceclaw >= 820)
 
-`glasses.dialog_open {text, ttl_ms}` shows your line on the lenses, opens
-the microphone hands-free, and blocks for ONE spoken answer:
-`{action: answered|dismissed|no-answer, text?}`. It is the discussion
+`glasses.dialog_open {text, ttl_ms}` shows your line on the lenses and
+blocks until the wearer TAPS to answer by voice (the mic opens on the tap,
+never before; double-tap skips): `{action: answered|dismissed|no-answer,
+text?}`. It is the discussion
 primitive; popups stay the delivery primitive — never use it to deliver a
 reminder.
 
