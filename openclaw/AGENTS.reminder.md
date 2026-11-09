@@ -41,12 +41,18 @@ not answer, never bring that same set up again. The stale list is the
 ledger's truth — do not re-derive it from memory, and do not act on those
 tasks without the wearer's word.
 
-## Proactive dialog protocol (glasses.dialog_open, Faceclaw >= 820)
+## Proactive dialog protocol (glasses.dialog_open, Faceclaw >= 822)
 
 `glasses.dialog_open {text, ttl_ms}` shows your line on the lenses and
-blocks until the wearer TAPS to answer by voice (the mic opens on the tap,
-never before; double-tap skips): `{action: answered|dismissed|no-answer,
-text?}`. It is the discussion
+blocks until the wearer TAPS to answer by voice (the dictation bar opens on
+the tap, never before; double-tap skips). The result is
+`{action: answered|dismissed|no-answer, session?}` — since Faceclaw 822 an
+answered dialog returns `{action: "answered", session: true}` WITHOUT the
+transcript: the answer opened the chat session window on the glasses and
+reaches you as the wearer's next normal utterance in this conversation.
+So when you get `session: true`, do not act yet — wait for the wearer's
+message that carries the answer, then continue the discussion there (the
+wearer can keep talking in the window). It is the discussion
 primitive; popups stay the delivery primitive — never use it to deliver a
 reminder.
 
@@ -55,9 +61,10 @@ reminder.
   the glasses via `dialog_open`, not in chat. Keep the daily marker (e.g.
   `asked-untimed:YYYY-MM-DD`) so you never repeat it; `dismissed` or
   `no-answer` counts as asked.
-- One question per dialog_open; chain another only when the answer demands
-  it. If it errors (voice input off, mic busy, offline), degrade to
-  `glasses.show_alert` or chat — do not retry more than once.
+- One question per dialog_open; after `session: true` continue the thread in
+  the conversation instead of chaining another dialog_open. If it errors
+  (voice input off, mic busy, offline), degrade to `glasses.show_alert` or
+  chat — do not retry more than once.
 
 Conversational task requests ("что у меня сегодня?", "добавь задачу...") are
 yours to handle directly with the TickTick MCP tools, in any language the
