@@ -32,6 +32,15 @@ const SCAN_CONFIG = {
   projects: [],
   // Skip projects of these kinds (TickTick has "note" lists alongside tasks).
   skipKinds: ["note"],
+  // Belt and braces for the all-day rule: a due time at local midnight is
+  // how TickTick spells "no time of its own" when the all-day flag is
+  // missing or spelled differently in a payload. A real timed task sits at
+  // a real hour. (The 2026-11-11 device test: two untimed tasks fired a
+  // group popup because the flag went undetected in the payload then live.)
+  treatMidnightAsAllDay: true,
+  // IANA zone the midnight check reads wall clock in; "system" = the
+  // server's own clock.
+  midnightTimezone: "Europe/Moscow",
   // Only scan tasks due within this horizon (overdue included). The wearer's
   // list carries annual birthdays far in the future; loading them all just
   // churns the ledger cap. planScan drops ledger entries absent from the
@@ -46,6 +55,16 @@ const SCAN_CONFIG = {
 /** snake_case -> camelCase: the code-mode runtime renames MCP tools. */
 function toCamel(name) {
   return name.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+
+/** Local wall-clock minutes since midnight of an instant, in `tz`. */
+function localMinuteOfDay(ms, tz) {
+  const opts = { hour: "2-digit", minute: "2-digit", hour12: false };
+  if (tz && tz !== "system") opts.timeZone = tz;
+  const parts = new Intl.DateTimeFormat("en-GB", opts).formatToParts(new Date(ms));
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return (hour % 24) * 60 + minute;
 }
 
 function mcpCall(tool, args) {
@@ -93,6 +112,24 @@ async function mcpCallAny(tool, argShapes) {
   throw new Error(`ticktick.${tool} failed for every argument shape: ${lastError?.message ?? lastError}`);
 }
 
+/**
+ * All-day sweep on NORMALIZED rows: a due time at local midnight is how
+ * TickTick spells "no time of its own" when the all-day flag is missing or
+ * spelled differently in a payload (the 2026-11-11 device test: two untimed
+ * tasks fired a group popup because the flag went undetected live). A real
+ * timed task sits at a real hour, so this cannot silence one. Works on the
+ * normalizeTasks output, so every raw payload shape (JSONL, project-detail
+ * wrappers, camelCase) is covered by one code path.
+ */
+function markMidnightAllDay(rows) {
+  if (!SCAN_CONFIG.treatMidnightAsAllDay) return rows;
+  for (const row of rows) {
+    if (row.allDay || row.dueMs === null) continue;
+    if (localMinuteOfDay(row.dueMs, SCAN_CONFIG.midnightTimezone) === 0) row.allDay = true;
+  }
+  return rows;
+}
+
 async function main() {
   const nowMs = Date.now();
   // Quiet hours: the ledger keeps tracking, nothing fires, wake near the
@@ -124,7 +161,7 @@ async function main() {
       { project_id: project.id },
       { projectId: project.id },
     ]);
-    let rows = normalizeTasks(raw);
+    const rows = markMidnightAllDay(normalizeTasks(raw));
     // Virtual Inbox: the scoped call can answer empty for the "inbox" alias;
     // fall back to the account-wide undone-by-time queries (overdue window +
     // next week), deduped against everything already collected.
@@ -137,7 +174,7 @@ async function main() {
             { query_command: q },
             { queryCommand: q },
           ]);
-          for (const t of normalizeTasks(wide)) {
+          for (const t of markMidnightAllDay(normalizeTasks(wide))) {
             if (!seen.has(t.id)) { seen.add(t.id); tasks.push(t); }
           }
         } catch {
@@ -212,6 +249,17 @@ async function main() {
   if (plan.events.length) {
     result.notify = renderEvent(plan.events[0]);
     result.wake = "now";
+    // Forensics: the event's identity and membership persisted in state
+    // (the full text is not — the 16 KB budget). After the 2026-11-11
+    // device test there was no way to tell what the controller actually
+    // sent versus what the courier rendered; this closes that gap.
+    const ev = plan.events[0];
+    result.state.diag.lastEvent = {
+      at: nowIso,
+      kind: ev.kind,
+      reminderId: ev.reminderId,
+      taskIds: (ev.tasks ?? []).map((t) => t.taskId),
+    };
   }
   return result;
 }

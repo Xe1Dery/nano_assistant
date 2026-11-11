@@ -229,3 +229,43 @@ test("a group that loses members to the closure check degrades to a single popup
   assert.doesNotMatch(result.notify, /free_text/, "no longer the grouped shape");
   assert.doesNotMatch(result.notify, /g2/);
 });
+
+test("an all-day flag lost in the payload is caught by the midnight rule", async () => {
+  // The 2026-11-11 device test, reproduced: two untimed tasks due at local
+  // midnight, the project list answering without any allDay field. The
+  // midnight sweep must silence them even when the flag never arrives.
+  const midnightMsk = "2026-11-12T00:00:00.000+0300";
+  const mcp = {
+    ticktick: {
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        return JSON.stringify({ id: "p1", tasks: [
+          { id: "ta", title: "Тест А", dueDate: midnightMsk, status: 0 },
+          { id: "tb", title: "Тест В", dueDate: midnightMsk, status: 0 },
+        ] });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.equal(result.notify, undefined, "no group popup for midnight-due untimed tasks");
+  assert.equal(result.state.diag.quiet, 2);
+});
+
+test("the fired event's membership is recorded in state.diag.lastEvent", async () => {
+  const past = new Date(Date.now() - 60_000).toISOString();
+  const mcp = {
+    ticktick: {
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        return JSON.stringify({ id: "p1", tasks: [{ id: "t7", title: "Своевременно", dueDate: past, status: 0 }] });
+      },
+      async get_task_by_id(args) {
+        return JSON.stringify({ id: args.task_id, title: "Своевременно", dueDate: past, status: 0 });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.equal(result.state.diag.lastEvent.kind, "single");
+  assert.deepEqual(result.state.diag.lastEvent.taskIds, ["t7"]);
+  assert.match(result.state.diag.lastEvent.reminderId, /^r-t7-/);
+});

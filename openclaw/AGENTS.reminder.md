@@ -21,9 +21,13 @@ already made in code — what to show and when. Two things are yours:
 Procedure, not negotiable:
 
 1. Call `glasses.reminder_show` with the event's arguments (your `text`
-   inside). Single popups return a classified answer; grouped ones
-   (`free_text:true`) return the wearer's sentence as action `other` — map it
-   onto the listed tasks and act in TickTick (complete_task / update_task).
+   inside). The event's task list is the popup's exact membership: never
+   add, drop, or merge in tasks you know from elsewhere (TickTick, memory,
+   this scan's other rows) — the controller decided who is due, and tasks
+   without a time are never in it. Single popups return a classified answer;
+   grouped ones (`free_text:true`) return the wearer's sentence as action
+   `other` — map it onto the listed tasks and act in TickTick
+   (complete_task / update_task).
 2. The call blocks until the wearer answers by voice (after tapping the
    temple) or the popup closes. Parse the JSON result and apply the action
    table from the event exactly.
