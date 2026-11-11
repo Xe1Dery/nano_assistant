@@ -179,6 +179,35 @@ test("a candidate the task detail reports closed is dropped, not nagged", async 
   assert.ok(!("t3" in result.state.tasks), "the ledger entry is dropped");
 });
 
+test("all-day and undated tasks are tracked quietly; a timed task still fires", async () => {
+  const past = new Date(Date.now() - 60_000).toISOString();
+  const mcp = {
+    ticktick: {
+      async list_projects() { return JSON.stringify({ id: "p1", name: "Inbox", kind: "TASK" }); },
+      async get_project_with_undone_tasks() {
+        return JSON.stringify({ id: "p1", tasks: [
+          // An overdue all-day task: TickTick carries a dueDate, the
+          // controller must still never notify for it.
+          { id: "ad", title: "День рождения мамы", dueDate: past, isAllDay: true, status: 0 },
+          { id: "nd", title: "Когда-нибудь", status: 0 },
+          { id: "tm", title: "Позвонить клиенту", dueDate: past, status: 0 },
+        ] });
+      },
+      async get_task_by_id(args) {
+        return JSON.stringify({ id: args.task_id, title: args.task_id, dueDate: past, status: 0 });
+      },
+    },
+  };
+  const result = await run(mcp, { state: null, quiet: OPEN });
+  assert.match(result.notify, /"task_id":"tm"/, "the timed task fires");
+  assert.doesNotMatch(result.notify, /"task_id":"ad"/, "the all-day task is not in the popup");
+  assert.doesNotMatch(result.notify, /"task_id":"nd"/, "the undated task is not in the popup");
+  // Both stay tracked quietly, with no wake time attached.
+  assert.equal(result.state.tasks.ad.dueMs, null);
+  assert.equal(result.state.tasks.nd.dueMs, null);
+  assert.equal(result.state.diag.quiet, 2);
+});
+
 test("a group that loses members to the closure check degrades to a single popup", async () => {
   const past = new Date(Date.now() - 60_000).toISOString();
   const mcp = {

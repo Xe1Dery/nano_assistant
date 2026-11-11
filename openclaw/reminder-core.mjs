@@ -13,6 +13,10 @@
  *   stale     — repeated too many times with no answer; quiet until the task
  *               itself changes (a new due date resets it to due)
  * A closed or vanished task simply loses its ledger entry.
+ * Tasks the wearer never gets a popup for: no due date, and all-day tasks
+ * (isAllDay — even when TickTick carries a dueDate for them; an all-day
+ * task has no moment to remind at). They are tracked quietly so a later
+ * change (a time set, all-day switched off) re-enters with a fresh cycle.
  *
  * Popup policy (variant 2): one due task fires a classic single popup whose
  * voice answer is classified on the phone; two or more fire one grouped popup
@@ -182,11 +186,16 @@ export function normalizeTasks(raw) {
     const dueRaw = t.dueDate ?? t.due ?? t.dueAt ?? t.due_time ?? null;
     const dueMs = dueRaw ? Date.parse(dueRaw) : NaN;
     const fullTitle = String(t.title ?? t.name ?? t.content ?? "(task)");
+    // TickTick spells the all-day flag a few ways across API versions; any
+    // truthy spelling counts. An all-day task may still carry a dueDate
+    // (the day it sits on) — that date is a label, not a moment to remind.
+    const allDay = t.isAllDay === true || t.isAllDay === "true" || t.allDay === true || t.all_day === true;
     out.push({
       id: String(id),
       title: fullTitle,
       dueMs: Number.isFinite(dueMs) ? dueMs : null,
       closed,
+      allDay,
     });
   }
   return out;
@@ -235,9 +244,13 @@ export function planScan(state, tasks, nowMs, config = {}) {
     let entry;
     if (task.closed) continue; // closed elsewhere: ledger entry simply gone
     fullTitles.set(task.id, task.title);
-    if (task.dueMs) wakeTimes.push(task.dueMs - cfg.leadMs);
-    if (!task.dueMs) {
-      // Deadline removed: keep tracking quietly, no reminder without a date.
+    if (task.dueMs && !task.allDay) wakeTimes.push(task.dueMs - cfg.leadMs);
+    if (!task.dueMs || task.allDay) {
+      // No date, all-day (a date it carries is a label, not a moment), or a
+      // deadline removed: keep tracking quietly, no reminder. The ledger
+      // stores dueMs null, so setting a real time later (or switching the
+      // all-day flag off) reads as a due change and re-enters with a fresh
+      // cycle.
       entry = { title: clipTitle(task.title, cfg.maxTitleChars), dueMs: null, status: "due", repeat: 0, lastNotifiedAt: 0 };
       next.tasks[task.id] = entry;
       continue;

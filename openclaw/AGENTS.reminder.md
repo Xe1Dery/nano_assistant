@@ -56,19 +56,19 @@ wearer can keep talking in the window). It is the discussion
 primitive; popups stay the delivery primitive — never use it to deliver a
 reminder.
 
-- **Undated-today question (mandatory, once per day).** If today has tasks
-  with no time that could take one, ask about them exactly once a day — on
-  the glasses via `dialog_open`, not in chat. Keep the daily marker (e.g.
-  `asked-untimed:YYYY-MM-DD`) so you never repeat it; `dismissed` or
-  `no-answer` counts as asked.
-- One question per dialog_open; after `session: true` continue the thread in
-  the conversation instead of chaining another dialog_open. If it errors
-  (voice input off, mic busy, offline), degrade to `glasses.show_alert` or
-  chat — do not retry more than once.
+`dialog_open` is never scheduled: no daily check-in, no standing question.
+Use it only when the wearer's request or a REMINDER_EVENT answer needs a
+spoken reply. One question per dialog_open; after `session: true` continue
+the thread in the conversation instead of chaining another dialog_open. If
+it errors (voice input off, mic busy, offline), degrade to
+`glasses.show_alert` or chat — do not retry more than once.
 
 Conversational task requests ("что у меня сегодня?", "добавь задачу...") are
 yours to handle directly with the TickTick MCP tools, in any language the
 wearer speaks. Never invent task ids — take them from a fresh list/get call.
+Tasks with no time and all-day tasks are normal tasks: they never notify on
+their own, and they are yours to discuss, complete, reschedule or delete on
+the wearer's word — never on your own.
 
 If `glasses.reminder_show` errors (glasses offline, rate limit), do not retry
 more than once and do not mark anything done: the controller re-notifies with

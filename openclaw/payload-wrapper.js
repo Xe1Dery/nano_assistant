@@ -198,6 +198,8 @@ async function main() {
     // Dates past the week horizon, hidden from the scan (mostly birthdays).
     beyondHorizon: tasks.length - scanned.length,
     withDue: scanned.filter((t) => t.dueMs).length,
+    // Tracked quietly, never notified (no date, or all-day).
+    quiet: scanned.filter((t) => !t.dueMs || t.allDay).length,
     closed: scanned.filter((t) => t.closed).length,
     events: plan.events.length,
     // Task titles the ledger gave up nagging about (status stale): visible

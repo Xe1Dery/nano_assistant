@@ -195,6 +195,53 @@ test("tasks without a due date are tracked but never fire", () => {
   assert.equal(plan.nextCheckMs, null);
 });
 
+test("all-day tasks never fire even when TickTick carries a dueDate", () => {
+  // The wearer's rule: an all-day task has no moment to remind at, so the
+  // date TickTick returns for it is a label, not a deadline.
+  const plan = planScan(null, [task("a", "День рождения мамы", T0 - min(1), { allDay: true })], T0);
+  assert.equal(plan.events.length, 0);
+  assert.equal(plan.state.tasks.a.status, "due");
+  // Stored with dueMs null: it must not pull nextCheck either.
+  assert.equal(plan.state.tasks.a.dueMs, null);
+  assert.equal(plan.nextCheckMs, null);
+  // A future all-day due date is no different.
+  const future = planScan(null, [task("b", "Выходные", T0 + min(60), { allDay: true })], T0);
+  assert.equal(future.events.length, 0);
+  assert.equal(future.nextCheckMs, null);
+});
+
+test("a timed task still fires; the all-day flag does not leak sideways", () => {
+  const plan = planScan(null, [
+    task("ad", "all-day", T0 - min(1), { allDay: true }),
+    task("tm", "во время", T0 - min(1), { allDay: false }),
+  ], T0);
+  assert.equal(plan.events.length, 1);
+  assert.deepEqual(plan.events[0].tasks.map((t) => t.taskId), ["tm"]);
+});
+
+test("a recurring all-day task never fires across cycles", () => {
+  // TickTick advances a recurring task's dueDate after each completion; an
+  // all-day recurrence must stay silent every cycle, not just the first.
+  const mk = (due) => [task("r", "Ежедневная зарядка", due, { allDay: true })];
+  let plan = planScan(null, mk(T0 - min(1)), T0);
+  assert.equal(plan.events.length, 0);
+  plan = planScan(plan.state, mk(T0 + min(1440)), T0 + min(1440));
+  assert.equal(plan.events.length, 0);
+  assert.equal(plan.state.tasks.r.status, "due");
+  assert.equal(plan.state.tasks.r.repeat, 0);
+  assert.equal(plan.nextCheckMs, null);
+});
+
+test("an all-day task given a real time re-enters with a fresh cycle", () => {
+  const silent = planScan(null, [task("a", "x", T0 - min(1), { allDay: true })], T0);
+  assert.equal(silent.events.length, 0);
+  // The wearer sets a time in TickTick: dueMs changes from the stored null,
+  // which reads as a moved deadline -> due, and it fires.
+  const timed = planScan(silent.state, [task("a", "x", T0 - min(1), { allDay: false })], T0);
+  assert.equal(timed.events.length, 1);
+  assert.equal(timed.state.tasks.a.repeat, 1);
+});
+
 test("nextCheckMs tracks the nearest real wake need", () => {
   // Future deadline, nothing due now: wake exactly at the due time.
   const due = T0 + min(4);
@@ -231,11 +278,12 @@ test("normalizeTasks survives the field-name variants and marks closed", () => {
       { taskId: "3", name: "c", completedTime: "2026-11-08T10:00:00Z" },
       { id: "4", title: "no date" },
       { id: "5", title: "e", status: 0, completed: true, completedTime: "2026-02-18T09:47:54+0500" },
+      { id: "6", title: "all day", dueDate: "2026-11-09T12:00:00.000+0000", isAllDay: true, status: 0 },
       null,
       { title: "no id" },
     ],
   });
-  assert.equal(rows.length, 5);
+  assert.equal(rows.length, 6);
   assert.equal(rows[0].dueMs, Date.parse("2026-11-09T12:00:00.000+0000"));
   assert.equal(rows[1].closed, true);
   // A lone completedTime does NOT mean closed: the undone-tasks endpoint can
@@ -245,6 +293,12 @@ test("normalizeTasks survives the field-name variants and marks closed", () => {
   assert.equal(rows[3].dueMs, null);
   // An explicit completed:true flag still closes, even with a stale time.
   assert.equal(rows[4].closed, true);
+  // isAllDay survives normalization, and the carried dueDate is kept too
+  // (planScan is what turns an all-day task into a quiet one).
+  assert.equal(rows[5].allDay, true);
+  assert.equal(rows[5].dueMs, Date.parse("2026-11-09T12:00:00.000+0000"));
+  // A plain task is explicitly not all-day.
+  assert.equal(rows[0].allDay, false);
 });
 
 test("normalizeProjects handles arrays and wrappers", () => {
