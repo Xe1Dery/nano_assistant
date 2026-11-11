@@ -35,7 +35,7 @@ export const DEFAULTS = {
   ttlMs: 60_000,
   /** nextCheck bounds, as durations the OpenClaw scheduler understands. */
   minNextCheck: "1m",
-  maxNextCheck: "5m",
+  maxNextCheck: "1m",
   /** Ledger cap; oldest entries are pruned past it (see ledgerRank). */
   maxEntries: 100,
   /** Hard budget for the persisted state (OpenClaw caps it at 16 KB). */

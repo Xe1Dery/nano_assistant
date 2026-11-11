@@ -39,13 +39,14 @@ test("future deadline does not fire; nextCheck points at it", () => {
   assert.equal(plan.events.length, 0);
   assert.equal(plan.state.tasks.a.status, "due");
   assert.equal(plan.nextCheckMs, due);
-  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "4m");
+  // maxNextCheck is 1m, so a 4-minute deadline is still polled every minute.
+  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "1m");
 });
 
 test("nextCheck clamps to the configured maximum", () => {
   const due = T0 + min(120);
   const plan = planScan(null, [task("a", "x", due)], T0);
-  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "5m");
+  assert.equal(nextCheckDuration(plan.nextCheckMs, T0), "1m");
   assert.equal(nextCheckDuration(plan.nextCheckMs, T0, { maxNextCheck: "30m" }), "30m");
 });
 
